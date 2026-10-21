@@ -1,0 +1,29 @@
+# Solo local: compila la imagen desde el código y agrega un PostgreSQL con volumen
+# (en AWS PostgreSQL corre en su propia EC2). RabbitMQ va aparte: docker-compose.rabbitmq.yml.
+# Puerto 5433 en el host para no chocar con el PostgreSQL local de catalog (5432).
+services:
+  orders:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${DB_NAME:?falta DB_NAME en .env}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

@@ -1,0 +1,248 @@
+### Pedidos360 · ms-pedidos360-orders — flujo completo
+# Formato: VS Code "REST Client" (humao.rest-client). Ejecutar las peticiones EN ORDEN, de arriba hacia abajo:
+# las que tienen "# @name" guardan la respuesta y las siguientes leen el id con {{nombre.response.body.$.id}}.
+#
+# Requisitos: catalog en 8081 (con el seed cargado), orders en 8082 y RabbitMQ local
+# (docker compose -f docker-compose.rabbitmq.yml up -d). Ver README.
+#
+# Tokens: access token de Entra ID (scope access_as_user). Se copia desde el front → DevTools → Network →
+# header Authorization de cualquier llamada a /api/... (sin "Bearer ").
+#   - tokenOperador: usuario con rol Operador (o Admin): acepta, prepara, despacha y entrega.
+#   - tokenCliente: usuario con rol Cliente. Si solo tienes una cuenta con rol Operador, usa el mismo token en ambos.
+#   - tokenAdmin: rol Admin (solo para DELETE).
+
+@orders = http://localhost:8082
+@catalog = http://localhost:8081
+@tokenCliente = PEGAR_TOKEN_CLIENTE
+@tokenOperador = PEGAR_TOKEN_OPERADOR
+@tokenAdmin = PEGAR_TOKEN_ADMIN
+
+### 0. Health (público; UP aunque RabbitMQ esté caído)
+GET {{orders}}/actuator/health
+
+### 0b. Sin token -> 401 con ErrorBody
+GET {{orders}}/api/orders
+
+### 1. Stock inicial en catalog de Pan Amasado (id 1) y Café Americano (id 4): anotarlo
+GET {{catalog}}/api/catalog/products/1
+Authorization: Bearer {{tokenOperador}}
+
+###
+GET {{catalog}}/api/catalog/products/4
+Authorization: Bearer {{tokenOperador}}
+
+
+############################################################################
+# A. FLUJO FELIZ: crear -> aceptar (baja stock) -> preparar -> despachar -> entregar
+############################################################################
+
+### A1. Crear (Cliente) -> 201 CREADO. El "precio" enviado se ignora: se usa el de catalog.
+# Publica email.send (OrderCreated).
+# @name pedidoA
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+X-Request-Id: demo-flujo-a
+
+{
+  "direccionEntrega": "Av. Providencia 1234, Santiago",
+  "items": [
+    { "productoId": 1, "cantidad": 2, "precio": 1 },
+    { "productoId": 4, "cantidad": 1 }
+  ]
+}
+
+### A2. Aceptar (Operador) -> 200 ACEPTADO, stockDescontado=true.
+# Publica email.send + kitchen.ticket.
+PUT {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+X-Request-Id: demo-flujo-a
+
+{ "status": "ACEPTADO", "comentario": "Confirmado por teléfono" }
+
+### A2b. Verificar en catalog: el stock del producto 1 bajó en 2 y el del 4 en 1
+GET {{catalog}}/api/catalog/products/1
+Authorization: Bearer {{tokenOperador}}
+
+### A3. En preparación (con tilde, como el enunciado) -> 200 EN_PREPARACION. Publica email.send.
+PUT {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "EN_PREPARACIÓN" }
+
+### A4. Despachar -> 200 DESPACHADO. Publica email.send.
+PUT {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "DESPACHADO", "comentario": "Repartidor: Juan" }
+
+### A5. Entregar -> 200 ENTREGADO. Publica email.send + invoice.gen.
+PUT {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "ENTREGADO" }
+
+### A6. Historial -> 5 filas (null->CREADO, CREADO->ACEPTADO, ..., DESPACHADO->ENTREGADO)
+GET {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/history
+Authorization: Bearer {{tokenCliente}}
+
+### A7. Estado terminal: cancelar un pedido ENTREGADO -> 409
+PUT {{orders}}/api/orders/{{pedidoA.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "CANCELADO" }
+
+
+############################################################################
+# B. DESPACHO SIN ACEPTAR -> 409
+############################################################################
+
+### B1. Crear
+# @name pedidoB
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "Los Leones 456, Providencia", "items": [ { "productoId": 2, "cantidad": 3 } ] }
+
+### B2. Despachar sin aceptar -> 409 "No se puede despachar un pedido que no fue aceptado". No publica nada.
+PUT {{orders}}/api/orders/{{pedidoB.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "DESPACHADO" }
+
+### B3. Editar en CREADO (Cliente dueño u Operador) -> 200, recalcula precios desde catalog
+PUT {{orders}}/api/orders/{{pedidoB.response.body.$.id}}
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "Los Leones 789, Providencia", "items": [ { "productoId": 3, "cantidad": 4 } ] }
+
+### B4. El Cliente cancela su pedido en CREADO -> 200 CANCELADO (no hay stock que reponer)
+PUT {{orders}}/api/orders/{{pedidoB.response.body.$.id}}/status
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "status": "CANCELADO", "comentario": "Me equivoqué de dirección" }
+
+### B5. Admin: borrado lógico (solo CREADO o CANCELADO) -> 204; luego GET -> 404
+DELETE {{orders}}/api/orders/{{pedidoB.response.body.$.id}}
+Authorization: Bearer {{tokenAdmin}}
+
+
+############################################################################
+# C. ACEPTAR SIN STOCK -> 409 (el pedido queda en CREADO)
+############################################################################
+
+### C1. Crear con más unidades de las que hay (Torta de Chocolate, id 7, seed = 30). Crear no valida stock.
+# @name pedidoC
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "Apoquindo 3000, Las Condes", "items": [ { "productoId": 1, "cantidad": 1 }, { "productoId": 7, "cantidad": 1000 } ] }
+
+### C2. Aceptar -> 409 con detalles {productoId, solicitado, disponible}. Catalog no descuenta NADA
+# (tampoco el producto 1: todo o nada) y no se publica kitchen.ticket.
+PUT {{orders}}/api/orders/{{pedidoC.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "ACEPTADO" }
+
+### C3. Sigue en CREADO con stockDescontado=false
+GET {{orders}}/api/orders/{{pedidoC.response.body.$.id}}
+Authorization: Bearer {{tokenOperador}}
+
+
+############################################################################
+# D. CANCELAR DESDE ACEPTADO -> repone stock
+############################################################################
+
+### D1. Crear
+# @name pedidoD
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "Irarrázaval 2100, Ñuñoa", "items": [ { "productoId": 1, "cantidad": 5 } ] }
+
+### D2. Aceptar -> baja 5 unidades del producto 1
+PUT {{orders}}/api/orders/{{pedidoD.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "ACEPTADO" }
+
+### D3. Stock del producto 1 (5 menos)
+GET {{catalog}}/api/catalog/products/1
+Authorization: Bearer {{tokenOperador}}
+
+### D4. El Cliente ya no puede cancelarlo (está ACEPTADO) -> 409
+PUT {{orders}}/api/orders/{{pedidoD.response.body.$.id}}/status
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "status": "CANCELADO" }
+
+### D5. El Operador cancela -> 200 CANCELADO, stockDescontado=false, motivoCancelacion
+PUT {{orders}}/api/orders/{{pedidoD.response.body.$.id}}/status
+Authorization: Bearer {{tokenOperador}}
+Content-Type: application/json
+
+{ "status": "CANCELADO", "comentario": "Sin repartidor disponible" }
+
+### D6. Stock del producto 1 repuesto (igual que en D2 antes de aceptar)
+GET {{catalog}}/api/catalog/products/1
+Authorization: Bearer {{tokenOperador}}
+
+
+############################################################################
+# E. LISTADO Y VALIDACIONES
+############################################################################
+
+### E1. Listado paginado (Operador ve todos; Cliente solo los suyos)
+GET {{orders}}/api/orders?page=0&size=10
+Authorization: Bearer {{tokenOperador}}
+
+### E2. Filtros: estado (acepta tilde) y rango de fechas ISO-8601
+GET {{orders}}/api/orders?estado=CANCELADO&desde=2026-01-01&hasta=2026-12-31T23:59:59Z
+Authorization: Bearer {{tokenCliente}}
+
+### E3. Validación -> 400 con detalles
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "", "items": [ { "productoId": 1, "cantidad": 0 } ] }
+
+### E4. Producto inexistente en catalog -> 400 con detalles["items[0].productoId"]
+POST {{orders}}/api/orders
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{ "direccionEntrega": "Dir", "items": [ { "productoId": 99999, "cantidad": 1 } ] }
+
+
+############################################################################
+# F. VERIFICAR EN RABBITMQ (http://localhost:15672, guest / guest)
+############################################################################
+# Sin consumidores (notify aún no existe), los mensajes quedan acumulados en las colas.
+# 1) Pestaña "Exchanges": existen cmd.direct, cmd.topic y cmd.dead.dlx (se declaran con el primer mensaje).
+# 2) Pestaña "Queues and Streams": tras ejecutar A + B + C + D se esperan aprox.:
+#      q.cmd.email   -> 1 por cada creación + 1 por cada cambio de estado exitoso
+#                       (A: 5, B: 2, C: 1, D: 3  => 11)
+#      q.cmd.kitchen -> 1 por cada ACEPTADO (A2 y D2 => 2)
+#      q.cmd.invoice -> 1 por cada ENTREGADO (A5 => 1)
+#    Los 409 (A7, B2, C2, D4) no publican nada. Las *.dlq quedan en 0.
+# 3) Entrar a q.cmd.kitchen -> "Get messages" -> Ack mode "Nack message requeue true" -> Get Message(s):
+#    ver el sobre JSON {type: "KitchenTicketRequested", eventId, timestamp, traceId, correlationId, payload{...items}}
+#    y en Properties: correlation_id / message_id = X-Request-Id (p. ej. "demo-flujo-a"), delivery_mode = 2.
+# 4) Para probar la DLQ: en q.cmd.email "Get messages" con Ack mode "Reject requeue false" -> el mensaje
+#    pasa a q.cmd.email.dlq (vía cmd.dead.dlx con routing key email.send).

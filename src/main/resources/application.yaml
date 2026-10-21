@@ -1,0 +1,73 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: ms-pedidos360-orders
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/pedidos360_orders}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${ENTRA_ISSUER_URI:https://login.microsoftonline.com/0bfad962-b91d-465a-b769-8e71565efe7d/v2.0}
+          audiences: ${ENTRA_API_CLIENT_ID:d80d5009-1b8a-49b2-a3da-08a8bbd00936}
+  # RabbitMQ vive en su propia EC2 (clúster de 2 nodos): RABBIT_ADDRESSES="ip1:5672,ip2:5672".
+  # La conexión es perezosa: la app arranca aunque Rabbit no esté disponible.
+  rabbitmq:
+    addresses: ${RABBIT_ADDRESSES:localhost:5672}
+    username: ${RABBIT_USERNAME:guest}
+    password: ${RABBIT_PASSWORD:guest}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  health:
+    # Rabbit caído no debe dejar el health en DOWN (el ALB/compose reiniciaría el servicio sin motivo).
+    rabbit:
+      enabled: false
+
+pedidos360:
+  services:
+    connect-timeout: ${SERVICES_CONNECT_TIMEOUT:2s}
+    read-timeout: ${SERVICES_READ_TIMEOUT:5s}
+    catalog:
+      base-url: ${CATALOG_BASE_URL:http://localhost:8081}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+  # Topología de comandos. notify (y luego el microservicio administrador) deben declarar las colas
+  # con los MISMOS argumentos (ver README) o RabbitMQ rechaza la declaración (PRECONDITION_FAILED).
+  rabbit:
+    declare-topology: ${RABBIT_DECLARE_TOPOLOGY:true}
+    exchanges:
+      direct: cmd.direct
+      topic: cmd.topic
+      dlx: cmd.dead.dlx
+    queues:
+      email: q.cmd.email
+      kitchen: q.cmd.kitchen
+      invoice: q.cmd.invoice
+    routing-keys:
+      email: email.send
+      kitchen: kitchen.ticket
+      invoice: invoice.gen
+    topic-patterns:
+      email: "email.*"
+      kitchen: "kitchen.#"
+      invoice: "invoice.*"
+
+logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"

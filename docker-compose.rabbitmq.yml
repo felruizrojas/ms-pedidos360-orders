@@ -1,0 +1,25 @@
+# Solo para desarrollo local: un nodo RabbitMQ con la UI de administración.
+# En AWS RabbitMQ es un clúster de 2 nodos en su propia EC2 (se define después en infra/mq/).
+# Igual que en AWS, orders se conecta por RABBIT_ADDRESSES:
+#   - orders con ./mvnw spring-boot:run      -> RABBIT_ADDRESSES=localhost:5672 (default)
+#   - orders en Docker (docker compose up)   -> RABBIT_ADDRESSES=host.docker.internal:5672
+# Levantar:  docker compose -f docker-compose.rabbitmq.yml up -d
+# UI:        http://localhost:15672  (guest / guest)
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: pedidos360-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rabbitdata:

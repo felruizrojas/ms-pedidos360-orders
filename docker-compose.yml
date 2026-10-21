@@ -1,0 +1,23 @@
+# Pedidos. En la EC2 se usa este archivo tal cual (imagen de GHCR); PostgreSQL y RabbitMQ viven en
+# otras EC2. En local se suma docker-compose.override.yml (compila la imagen y agrega un PostgreSQL)
+# y Rabbit se levanta aparte con docker-compose.rabbitmq.yml.
+# Variables: copiar .env.example a .env (en la EC2 el .env lo crea CloudFormation).
+services:
+  orders:
+    image: ${ORDERS_IMAGE:-ghcr.io/felruizrojas/ms-pedidos360-orders:latest}
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      DB_URL: ${DB_URL:?falta DB_URL en .env}
+      DB_USERNAME: ${DB_USERNAME:?falta DB_USERNAME en .env}
+      DB_PASSWORD: ${DB_PASSWORD:?falta DB_PASSWORD en .env}
+      CATALOG_BASE_URL: ${CATALOG_BASE_URL:?falta CATALOG_BASE_URL en .env}
+      SERVICES_CONNECT_TIMEOUT: ${SERVICES_CONNECT_TIMEOUT:-2s}
+      SERVICES_READ_TIMEOUT: ${SERVICES_READ_TIMEOUT:-5s}
+      RABBIT_ADDRESSES: ${RABBIT_ADDRESSES:?falta RABBIT_ADDRESSES en .env}
+      RABBIT_USERNAME: ${RABBIT_USERNAME:?falta RABBIT_USERNAME en .env}
+      RABBIT_PASSWORD: ${RABBIT_PASSWORD:?falta RABBIT_PASSWORD en .env}
+      RABBIT_DECLARE_TOPOLOGY: ${RABBIT_DECLARE_TOPOLOGY:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    mem_limit: 768m
