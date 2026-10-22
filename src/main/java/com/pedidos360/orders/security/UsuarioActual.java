@@ -13,8 +13,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * Lee el usuario del JWT de Entra ID: id = "oid" (estable por tenant; "sub" si no viene),
- * nombre = "name", email = "preferred_username" (o "email") y roles desde las authorities ROLE_x
- * que arma SecurityConfig a partir del claim "roles".
+ * nombre = "name", email = "email" (o "preferred_username") y roles desde las authorities ROLE_x
+ * que arma SecurityConfig a partir del claim "roles". "email" es el campo Email del usuario en Entra ID
+ * (claim opcional del access token); si no viene, se usa el usuario de inicio de sesión.
  */
 @Component
 public class UsuarioActual {
@@ -28,7 +29,7 @@ public class UsuarioActual {
         }
         Jwt jwt = jwtAuth.getToken();
         String id = primero(jwt.getClaimAsString("oid"), jwt.getSubject());
-        String email = primero(jwt.getClaimAsString("preferred_username"), jwt.getClaimAsString("email"));
+        String email = primero(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
         Set<String> roles = auth.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
                 .filter(a -> a.startsWith(ROLE_PREFIX))

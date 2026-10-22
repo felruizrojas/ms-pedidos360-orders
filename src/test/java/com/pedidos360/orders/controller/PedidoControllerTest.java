@@ -163,6 +163,23 @@ class PedidoControllerTest {
     }
 
     @Test
+    void elClaimEmailTienePrioridadSobrePreferredUsername() throws Exception {
+        when(pedidoService.crear(any(), any())).thenReturn(respuesta(EstadoPedido.CREADO));
+
+        mvc.perform(post(URL).with(jwt().jwt(j -> j.subject("sub-1").claim("oid", "oid-Cliente")
+                                        .claim("preferred_username", "usuario3@contoso.onmicrosoft.com")
+                                        .claim("email", "correo.real@contoso.cl"))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_access_as_user"),
+                                        new SimpleGrantedAuthority("ROLE_Cliente")))
+                        .contentType(MediaType.APPLICATION_JSON).content(NUEVO))
+                .andExpect(status().isCreated());
+
+        ArgumentCaptor<Usuario> usuario = ArgumentCaptor.forClass(Usuario.class);
+        verify(pedidoService).crear(any(), usuario.capture());
+        assertThat(usuario.getValue().email()).isEqualTo("correo.real@contoso.cl");
+    }
+
+    @Test
     void crearSinItemsNiDireccionDevuelve400ConDetalles() throws Exception {
         mvc.perform(post(URL).with(como("Cliente")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"direccionEntrega\":\"  \",\"items\":[]}"))
