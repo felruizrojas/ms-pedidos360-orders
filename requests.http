@@ -23,6 +23,19 @@ GET {{orders}}/actuator/health
 ### 0b. Sin token -> 401 con ErrorBody
 GET {{orders}}/api/orders
 
+### 0c. Notificación de prueba de la guía Parte 2 (cualquier rol) -> 202
+# q.cmd.email sube a Ready = 1 (o notify la registra con "Notificacion recibida"). Sin token -> 401.
+POST {{orders}}/api/orders/test-notification
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+    "pedidoId": 501,
+    "email": "cliente@ejemplo.cl",
+    "asunto": "Pedido confirmado",
+    "mensaje": "Su pedido 501 ha sido confirmado"
+}
+
 ### 1. Stock inicial en catalog de Pan Amasado (id 1) y Café Americano (id 4): anotarlo
 GET {{catalog}}/api/catalog/products/1
 Authorization: Bearer {{tokenOperador}}

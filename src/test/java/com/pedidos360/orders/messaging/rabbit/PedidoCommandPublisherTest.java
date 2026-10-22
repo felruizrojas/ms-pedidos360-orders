@@ -37,7 +37,7 @@ class PedidoCommandPublisherTest {
             new RabbitProperties.Exchanges("cmd.direct", "cmd.topic", "cmd.dead.dlx"),
             new RabbitProperties.Destinos("q.cmd.email", "q.cmd.kitchen", "q.cmd.invoice"),
             new RabbitProperties.Destinos("email.send", "kitchen.ticket", "invoice.gen"),
-            new RabbitProperties.Destinos("email.*", "kitchen.#", "invoice.*"));
+            new RabbitProperties.Destinos("email.#", "kitchen.#", "invoice.*"));
 
     private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
     private final PedidoCommandPublisher publisher = new PedidoCommandPublisher(rabbitTemplate, PROPS);

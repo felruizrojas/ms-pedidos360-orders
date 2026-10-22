@@ -7,11 +7,12 @@ Coordina el stock con **ms-pedidos360-catalog** (8081) y **produce comandos** en
 ## Qué cubre de la evaluación
 | Requisito | Implementación |
 |---|---|
-| Microservicio Spring Boot que compila y pasa pruebas | `./mvnw clean verify` (119 tests; H2, sin PostgreSQL, RabbitMQ, Kafka ni Azure) |
+| Microservicio Spring Boot que compila y pasa pruebas | `./mvnw clean verify` (128 tests; H2, sin PostgreSQL, RabbitMQ, Kafka ni Azure) |
 | Integración con BD | Entidades `Pedido`, `ItemPedido`, `HistorialEstado` (JPA), base `pedidos360_orders` |
 | Máquina de estados | `MaquinaEstadosPedido` (Java puro, 36 combinaciones testeadas). "No se puede despachar un pedido que no fue aceptado" → 409 |
 | Integración entre microservicios | `CatalogClient` (RestClient): precios al crear, descuento de stock al **aceptar**, reposición al **cancelar** |
 | Mensajería (RabbitMQ) | Productor de comandos `email.send`, `kitchen.ticket`, `invoice.gen` en `cmd.direct`, publicados **después del commit** |
+| Guía Parte 2 (Postman) | `POST /api/orders/test-notification` publica un `NotificationMessage` en `cmd.direct`/`email.send` (ver [Notificación de prueba](#notificación-de-prueba-guía-parte-2)) |
 | Filtro que valida el JWT del IDaaS | OAuth2 Resource Server: firma (JWKS de Entra ID), `exp/nbf`, `issuer`, `audience`, scope `access_as_user` |
 | Autorización | `@PreAuthorize` por rol (`Admin`, `Operador`, `Cliente`) + verificación de dueño en el servicio |
 | Concurrencia | `@Version` (optimista) en `Pedido` → 409 si dos operadores lo modifican a la vez |
@@ -76,24 +77,42 @@ Con `RABBIT_DECLARE_TOPOLOGY=true`, orders declara todo al abrir su **primera** 
 | `cmd.topic` | topic | sí |
 | `cmd.dead.dlx` | direct | sí |
 
-| Cola | Durable | Argumentos (**deben ser idénticos** en quien la declare) |
-|---|---|---|
-| `q.cmd.email` | sí | `x-dead-letter-exchange=cmd.dead.dlx`, `x-dead-letter-routing-key=email.send` |
-| `q.cmd.kitchen` | sí | `x-dead-letter-exchange=cmd.dead.dlx`, `x-dead-letter-routing-key=kitchen.ticket` |
-| `q.cmd.invoice` | sí | `x-dead-letter-exchange=cmd.dead.dlx`, `x-dead-letter-routing-key=invoice.gen` |
-| `q.cmd.email.dlq` | sí | ninguno |
-| `q.cmd.kitchen.dlq` | sí | ninguno |
-| `q.cmd.invoice.dlq` | sí | ninguno |
+Las 6 colas (`q.cmd.email`, `q.cmd.kitchen`, `q.cmd.invoice` y sus `.dlq`) son durables y se declaran **sin argumentos**. El dead-lettering lo aplican policies del broker, como en la guía de la Parte 1:
 
-> ⚠️ ms-pedidos360-notify y el futuro administrador deben declarar estas colas **con exactamente los mismos argumentos** (ni más ni menos: sin `x-queue-type`, `x-message-ttl`, etc.). Si difieren, RabbitMQ rechaza la declaración con `PRECONDITION_FAILED - inequivalent arg` y el consumidor no arranca.
+| Policy | Patrón | `dead-letter-exchange` | `dead-letter-routing-key` |
+|---|---|---|---|
+| `policy.email.dlx` | `^q\.cmd\.email$` | `cmd.dead.dlx` | `email.send` |
+| `policy.kitchen.dlx` | `^q\.cmd\.kitchen$` | `cmd.dead.dlx` | `kitchen.ticket` |
+| `policy.invoice.dlx` | `^q\.cmd\.invoice$` | `cmd.dead.dlx` | `invoice.gen` |
+
+AMQP no puede declarar policies: en AWS vienen en `infra/mq/definitions.json` y en local las crea `docker-compose.rabbitmq.yml` al arrancar. Sin ellas, un mensaje rechazado se descarta en vez de ir a la DLQ.
+
+> ⚠️ ms-pedidos360-notify y el futuro administrador también deben declarar estas colas **sin argumentos** (ni `x-dead-letter-*`, ni `x-queue-type`, ni `x-message-ttl`). Si difieren, RabbitMQ rechaza la declaración con `PRECONDITION_FAILED - inequivalent arg` y el consumidor no arranca. Un broker con colas creadas por la versión anterior (con `x-dead-letter-*`) se debe recrear (`docker compose down -v`).
 
 | Exchange | Cola | Binding key |
 |---|---|---|
 | `cmd.direct` | `q.cmd.email` / `q.cmd.kitchen` / `q.cmd.invoice` | `email.send` / `kitchen.ticket` / `invoice.gen` |
-| `cmd.topic` | `q.cmd.email` / `q.cmd.kitchen` / `q.cmd.invoice` | `email.*` / `kitchen.#` / `invoice.*` |
+| `cmd.topic` | `q.cmd.email` / `q.cmd.kitchen` / `q.cmd.invoice` | `email.#` / `kitchen.#` / `invoice.*` |
 | `cmd.dead.dlx` | `q.cmd.email.dlq` / `q.cmd.kitchen.dlq` / `q.cmd.invoice.dlq` | `email.send` / `kitchen.ticket` / `invoice.gen` |
 
 Orders publica solo en `cmd.direct` (mensajes persistentes, `mandatory=true`, publisher confirms `correlated` y returns: un mensaje no confirmado o no enrutable queda en el log con nivel ERROR). Cuándo se publica cada comando: ver [Contrato](#contrato-para-otros-servicios).
+
+## Notificación de prueba (guía Parte 2)
+El recorrido de la guía *Configuración Rabbit Pedidos360 – Parte 2*: Postman → `POST /api/orders/test-notification` → `cmd.direct` [`email.send`] → `q.cmd.email` → notify.
+
+```http
+POST http://localhost:8082/api/orders/test-notification
+Authorization: Bearer <access token de Entra ID>
+Content-Type: application/json
+
+{ "pedidoId": 501, "email": "cliente@ejemplo.cl", "asunto": "Pedido confirmado", "mensaje": "Su pedido 501 ha sido confirmado" }
+```
+- Responde **202** `Solicitud de notificacion publicada`, 400 si falta un campo o el email no es válido, 401/403 sin token válido o sin rol, y 503 si RabbitMQ no responde. Un 202 significa que se solicitó la publicación, no que el correo se procesó.
+- **Pide token**, a diferencia de la guía: el mismo JWT que el resto de `/api/orders/**` (scope `access_as_user`) y cualquier rol de la aplicación (`Admin`, `Operador` o `Cliente`). En Postman: *Authorization* → *Bearer Token* (el token se copia desde el front, ver `requests.http`).
+- Publica el JSON **tal cual**, sin el sobre de los comandos, con la propiedad AMQP `type=TestNotification` (persistente, `content_type=application/json`). Notify reconoce ese `type` y solo registra `Notificacion recibida` / `Pedido` / `Destinatario` / `Asunto` / `Mensaje` y hace ACK, como el `NotificationConsumer` de la guía. No envía correo.
+- Con notify detenido, `q.cmd.email` queda en *Ready = 1*. Al iniciarlo pasa a *Ready 0, Unacked 0, Consumers 1* (tabla de la sección 14 de la guía).
+- Para publicarla desde la UI de RabbitMQ: `cmd.direct`, routing key `email.send`, *Properties* `type` = `TestNotification` y `content_type` = `application/json`. Sin ese `type`, notify la trata como un comando sin `eventId` y la manda a la DLQ.
+- También está en `requests.http` (petición 0c).
 
 ## Ejecutar en local
 Requisitos: Java 25 y Docker. Se levantan 4 piezas por separado, igual que en AWS: PostgreSQL, RabbitMQ, catalog y orders.
@@ -123,7 +142,7 @@ docker compose up -d --build                           # orders + PostgreSQL loc
 ```
 - `docker-compose.yml`: solo `orders` (imagen `ghcr.io/felruizrojas/ms-pedidos360-orders:latest`). Es el que se usa en la EC2.
 - `docker-compose.override.yml`: solo local. Agrega `build: .` y un PostgreSQL 17 con volumen y healthcheck (host 5433).
-- `docker-compose.rabbitmq.yml`: solo local, un nodo `rabbitmq:4-management`. Orders lo alcanza por `RABBIT_ADDRESSES=host.docker.internal:5672`.
+- `docker-compose.rabbitmq.yml`: solo local, un nodo `rabbitmq:4-management` que al arrancar crea las 3 policies `policy.*.dlx` (`post_start`, requiere Docker Compose 2.30 o superior). Orders lo alcanza por `RABBIT_ADDRESSES=host.docker.internal:5672`.
 
 ## Swagger (OpenAPI)
 | | |

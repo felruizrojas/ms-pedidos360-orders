@@ -64,7 +64,7 @@ pedidos360:
       kitchen: kitchen.ticket
       invoice: invoice.gen
     topic-patterns:
-      email: "email.*"
+      email: "email.#"
       kitchen: "kitchen.#"
       invoice: "invoice.*"
 

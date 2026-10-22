@@ -20,6 +20,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    # Dead-lettering por policies, igual que infra/mq/definitions.json (orders declara las colas
+    # sin argumentos). set_policy es idempotente: se aplica en cada arranque.
+    # Corre como rabbitmq (no root) para no dejar una .erlang.cookie que el servidor no pueda leer, y
+    # reintenta porque justo después de arrancar el contenedor la VM de Erlang aún no responde.
+    post_start:
+      - user: rabbitmq
+        command:
+          - sh
+          - -c
+          - |
+            until rabbitmqctl -q await_startup >/dev/null 2>&1; do sleep 2; done
+            rabbitmqctl -q set_policy --apply-to queues --priority 0 policy.email.dlx '^q\.cmd\.email$' '{"dead-letter-exchange":"cmd.dead.dlx","dead-letter-routing-key":"email.send"}'
+            rabbitmqctl -q set_policy --apply-to queues --priority 0 policy.kitchen.dlx '^q\.cmd\.kitchen$' '{"dead-letter-exchange":"cmd.dead.dlx","dead-letter-routing-key":"kitchen.ticket"}'
+            rabbitmqctl -q set_policy --apply-to queues --priority 0 policy.invoice.dlx '^q\.cmd\.invoice$' '{"dead-letter-exchange":"cmd.dead.dlx","dead-letter-routing-key":"invoice.gen"}'
 
 volumes:
   rabbitdata:
