@@ -27,7 +27,8 @@ class NotificacionServiceTest {
 
     private static PedidoEstadoCambiadoEvent evento(TipoEventoPedido tipo, EstadoPedido nuevo) {
         return new PedidoEstadoCambiadoEvent(tipo, 15L, "cliente-1", "Ana", "ana@pedidos360.cl", EstadoPedido.CREADO,
-                nuevo, new BigDecimal("1200.00"), List.of(), Instant.parse("2026-10-20T15:00:00Z"), "req-1");
+                nuevo, new BigDecimal("1200.00"), List.of(), Instant.parse("2026-10-20T15:00:00Z"), "req-1",
+                "cliente-1", "Ana", "Cliente");
     }
 
     @ParameterizedTest(name = "{0} -> {1} avisa \"{2}\"")

@@ -36,6 +36,7 @@ import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
 import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
+import com.pedidos360.orders.service.SeguimientoMensajes;
 import com.pedidos360.orders.support.RabbitMock;
 
 /** Routing key según el estado, sobre del mensaje, propiedades AMQP y confirms. RabbitTemplate mockeado. */
@@ -46,10 +47,12 @@ class PedidoCommandPublisherTest {
             new RabbitProperties.Destinos("q.cmd.email", "q.cmd.kitchen", "q.cmd.invoice"),
             new RabbitProperties.Destinos("email.send", "kitchen.ticket", "invoice.gen"),
             new RabbitProperties.Destinos("email.#", "kitchen.#", "invoice.*"),
-            Duration.ofMillis(200));
+            Duration.ofMillis(200),
+            new RabbitProperties.Resultados("evt.direct", "q.orders.resultados", "resultado.comando"));
 
     private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
-    private final PedidoCommandPublisher publisher = new PedidoCommandPublisher(rabbitTemplate, PROPS);
+    private final SeguimientoMensajes seguimiento = mock(SeguimientoMensajes.class);
+    private final PedidoCommandPublisher publisher = new PedidoCommandPublisher(rabbitTemplate, PROPS, seguimiento);
 
     @BeforeEach
     void brokerConfirma() {
@@ -65,7 +68,7 @@ class PedidoCommandPublisherTest {
                 new BigDecimal("2700.00"),
                 List.of(new PedidoEstadoCambiadoEvent.Item(1L, "Pan Amasado", 2, new BigDecimal("600.00"),
                         new BigDecimal("1200.00"))),
-                Instant.parse("2026-10-20T15:00:00Z"), "req-123");
+                Instant.parse("2026-10-20T15:00:00Z"), "req-123", "operador-1", "Olga Operadora", "Operador");
     }
 
     static Stream<Arguments> casos() {
@@ -112,6 +115,10 @@ class PedidoCommandPublisherTest {
         assertThat(email.payload().estadoAnterior()).isEqualTo(EstadoPedido.CREADO);
         assertThat(email.payload().estadoNuevo()).isEqualTo(EstadoPedido.ACEPTADO);
         assertThat(email.payload().items()).hasSize(1);
+        assertThat(email.payload().usuarioNombre()).isEqualTo("Olga Operadora");
+        assertThat(email.payload().usuarioRol()).isEqualTo("Operador");
+        verify(seguimiento).registrarEnviado(email.payload(), "email", "OrderStatusChanged", email.eventId());
+        verify(seguimiento).registrarEnviado(cocina.payload(), "kitchen", "KitchenTicketRequested", cocina.eventId());
 
         Message mensaje = mpp.getAllValues().get(0).postProcessMessage(new Message(new byte[0], new MessageProperties()));
         MessageProperties props = mensaje.getMessageProperties();

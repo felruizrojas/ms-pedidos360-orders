@@ -15,13 +15,18 @@ public record RabbitProperties(
         Destinos queues,
         Destinos routingKeys,
         Destinos topicPatterns,
-        Duration confirmTimeout) {
+        Duration confirmTimeout,
+        Resultados resultados) {
 
     public record Exchanges(String direct, String topic, String dlx) {
     }
 
     /** Un valor por tipo de comando: email (notificación), kitchen (ticket de cocina), invoice (boleta). */
     public record Destinos(String email, String kitchen, String invoice) {
+    }
+
+    /** Vuelta notify -> orders: resultado de cada comando (procesado, fallido o en la DLQ). */
+    public record Resultados(String exchange, String queue, String routingKey) {
     }
 
     public static String dlq(String queue) {

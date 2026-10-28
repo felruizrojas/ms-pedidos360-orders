@@ -40,10 +40,15 @@ public class RabbitTopologyConfig {
         Queue emailDlq = QueueBuilder.durable(RabbitProperties.dlq(colas.email())).build();
         Queue kitchenDlq = QueueBuilder.durable(RabbitProperties.dlq(colas.kitchen())).build();
         Queue invoiceDlq = QueueBuilder.durable(RabbitProperties.dlq(colas.invoice())).build();
+        RabbitProperties.Resultados res = props.resultados();
+        DirectExchange eventos = new DirectExchange(res.exchange(), true, false);
+        Queue resultados = QueueBuilder.durable(res.queue()).build();
 
         return new Declarables(
-                direct, topic, dlx,
-                email, kitchen, invoice, emailDlq, kitchenDlq, invoiceDlq,
+                direct, topic, dlx, eventos,
+                email, kitchen, invoice, emailDlq, kitchenDlq, invoiceDlq, resultados,
+                // evt.direct: resultados de notify hacia orders
+                bind(resultados, eventos, res.routingKey()),
                 // cmd.direct: routing key exacta
                 bind(email, direct, rk.email()),
                 bind(kitchen, direct, rk.kitchen()),

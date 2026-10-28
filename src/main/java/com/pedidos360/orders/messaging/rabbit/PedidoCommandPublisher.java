@@ -14,6 +14,7 @@ import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
 import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
+import com.pedidos360.orders.service.SeguimientoMensajes;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,21 +43,22 @@ public class PedidoCommandPublisher {
 
     private final RabbitTemplate rabbitTemplate;
     private final RabbitProperties properties;
+    private final SeguimientoMensajes seguimiento;
 
     public void publicar(PedidoEstadoCambiadoEvent evento) {
         PedidoComandoPayload payload = PedidoComandoPayload.de(evento);
         String correlationId = evento.correlationId() != null ? evento.correlationId() : UUID.randomUUID().toString();
         RabbitProperties.Destinos rk = properties.routingKeys();
 
-        enviar(rk.email(), typeEmail(evento.tipo()), payload, correlationId);
+        enviar("email", rk.email(), typeEmail(evento.tipo()), payload, correlationId);
         if (evento.tipo() != TipoEventoPedido.ESTADO_CAMBIADO) {
             return; // cocina y boleta solo reaccionan a transiciones de estado
         }
         if (evento.estadoNuevo() == EstadoPedido.ACEPTADO) {
-            enviar(rk.kitchen(), TYPE_KITCHEN_TICKET, payload, correlationId);
+            enviar("kitchen", rk.kitchen(), TYPE_KITCHEN_TICKET, payload, correlationId);
         }
         if (evento.estadoNuevo() == EstadoPedido.ENTREGADO) {
-            enviar(rk.invoice(), TYPE_INVOICE, payload, correlationId);
+            enviar("invoice", rk.invoice(), TYPE_INVOICE, payload, correlationId);
         }
     }
 
@@ -69,7 +71,8 @@ public class PedidoCommandPublisher {
         };
     }
 
-    private void enviar(String routingKey, String type, PedidoComandoPayload payload, String correlationId) {
+    private void enviar(String comando, String routingKey, String type, PedidoComandoPayload payload,
+            String correlationId) {
         // Sin librería de tracing distribuido, el traceId es el mismo X-Request-Id que viaja por todo el flujo.
         CommandEnvelope envelope = new CommandEnvelope(type, UUID.randomUUID().toString(), Instant.now(),
                 correlationId, correlationId, payload);
@@ -88,7 +91,9 @@ public class PedidoCommandPublisher {
             throw new ServicioNoDisponibleException("mensajería", ex);
         }
         ConfirmacionBroker.esperar(confirmacion, properties.confirmTimeout());
-        log.info("Comando {} publicado: routingKey={} pedidoId={} estado={} eventId={}",
-                type, routingKey, payload.pedidoId(), payload.estadoNuevo(), envelope.eventId());
+        seguimiento.registrarEnviado(payload, comando, type, envelope.eventId());
+        log.info("Comando {} publicado: routingKey={} pedidoId={} estado={} eventId={} por {} ({})",
+                type, routingKey, payload.pedidoId(), payload.estadoNuevo(), envelope.eventId(),
+                payload.usuarioNombre(), payload.usuarioRol());
     }
 }

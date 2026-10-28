@@ -69,6 +69,9 @@ class PedidoFlujoIntegrationTest {
     @MockitoBean
     RabbitTemplate rabbitTemplate;
 
+    @Autowired
+    com.pedidos360.orders.messaging.rabbit.ResultadoComandoListener resultadoListener;
+
     @BeforeEach
     void catalogConProductos() {
         RabbitMock.confirmaTodo(rabbitTemplate);
@@ -339,6 +342,51 @@ class PedidoFlujoIntegrationTest {
         // Cada usuario ve solo sus avisos.
         mvc.perform(get(URL + "/notifications").with(usuario("otro-cliente", "Cliente")))
                 .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void laVueltaDeNotifyQuedaEnLaMensajeriaDelPedidoConElActor() throws Exception {
+        long id = crearComo("cliente-msg");
+
+        String enviados = mvc.perform(get(URL + "/" + id + "/messages").with(operador()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].comando").value("email"))
+                .andExpect(jsonPath("$[0].type").value("OrderCreated"))
+                .andExpect(jsonPath("$[0].estado").value("ENVIADO"))
+                .andExpect(jsonPath("$[0].usuarioRol").value("Cliente"))
+                .andExpect(jsonPath("$[0].usuarioNombre").value("Usuario cliente-msg"))
+                .andReturn().getResponse().getContentAsString();
+        String eventId = JsonPath.read(enviados, "$[0].comandoEventId");
+
+        // notify rechazó el comando y llegó a la DLQ: su resultado vuelve por Rabbit a q.orders.resultados.
+        String resultado = "{\"eventId\":\"r-1\",\"comandoEventId\":\"" + eventId + "\",\"pedidoId\":" + id
+                + ",\"comando\":\"email\",\"type\":\"OrderCreated\",\"resultado\":\"EN_DLQ\","
+                + "\"motivo\":\"El pedido no trae clienteEmail\",\"cola\":\"q.cmd.email\",\"fecha\":\"2030-01-01T00:00:00Z\"}";
+        resultadoListener.onResultado(new org.springframework.amqp.core.Message(
+                resultado.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new org.springframework.amqp.core.MessageProperties()));
+
+        mvc.perform(get(URL + "/" + id + "/messages").with(operador()))
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[1].estado").value("EN_DLQ"))
+                .andExpect(jsonPath("$[1].motivo").value("El pedido no trae clienteEmail"))
+                .andExpect(jsonPath("$[1].comandoEventId").value(eventId));
+        mvc.perform(get(URL + "/" + id).with(operador())).andExpect(jsonPath("$.alertaMensajeria").value(true));
+        String lista = mvc.perform(get(URL).with(operador()).param("size", "100"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(JsonPath.<List<Boolean>>read(lista, "$.contenido[?(@.id == " + id + ")].alertaMensajeria"))
+                .containsExactly(true);
+        // La mensajería es del dashboard del operador.
+        mvc.perform(get(URL + "/" + id + "/messages").with(usuario("cliente-msg", "Cliente")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void unResultadoIlegibleSeDescartaSinRomperNada() {
+        resultadoListener.onResultado(new org.springframework.amqp.core.Message(
+                "{esto no es json".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new org.springframework.amqp.core.MessageProperties()));
     }
 
     @Test

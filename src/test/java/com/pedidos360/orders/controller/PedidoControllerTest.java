@@ -77,7 +77,7 @@ class PedidoControllerTest {
     static PedidoResponse respuesta(EstadoPedido estado) {
         return new PedidoResponse(15L, "oid-Cliente", "Cliente Test", "cliente@pedidos360.cl", "Av. Siempre Viva 742",
                 estado, new BigDecimal("1200.00"), false, List.of(), Instant.parse("2026-10-20T15:00:00Z"),
-                null, null, null, null, null, null, 0L);
+                null, null, null, null, null, null, 0L, false);
     }
 
     // ---------- autenticación / autorización ----------
@@ -138,7 +138,7 @@ class PedidoControllerTest {
     @Test
     void operadorEliminaCon204() throws Exception {
         mvc.perform(delete(URL + "/15").with(como("Operador"))).andExpect(status().isNoContent());
-        verify(pedidoService).eliminar(15L);
+        verify(pedidoService).eliminar(org.mockito.ArgumentMatchers.eq(15L), org.mockito.ArgumentMatchers.any());
     }
 
     @Test

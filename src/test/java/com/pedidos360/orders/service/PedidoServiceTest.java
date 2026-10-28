@@ -62,11 +62,14 @@ class PedidoServiceTest {
     @Mock
     ApplicationEventPublisher eventPublisher;
 
+    @Mock
+    SeguimientoMensajes seguimiento;
+
     PedidoService service;
 
     @BeforeEach
     void setUp() {
-        service = new PedidoService(pedidoRepository, historialRepository, catalogClient, eventPublisher);
+        service = new PedidoService(pedidoRepository, historialRepository, catalogClient, eventPublisher, seguimiento);
     }
 
     private void guardarDevuelveElMismo() {
@@ -333,7 +336,7 @@ class PedidoServiceTest {
     void eliminarPedidoAceptadoLanza409() {
         existente(EstadoPedido.ACEPTADO);
 
-        assertThatThrownBy(() -> service.eliminar(10L)).isInstanceOf(ConflictoException.class);
+        assertThatThrownBy(() -> service.eliminar(10L, TestData.operador())).isInstanceOf(ConflictoException.class);
     }
 
     @Test
@@ -341,7 +344,7 @@ class PedidoServiceTest {
         Pedido pedido = existente(EstadoPedido.CANCELADO);
         guardarDevuelveElMismo();
 
-        service.eliminar(10L);
+        service.eliminar(10L, TestData.operador());
 
         assertThat(pedido.isEliminado()).isTrue();
         PedidoEstadoCambiadoEvent evento = eventoPublicado();
@@ -357,6 +360,6 @@ class PedidoServiceTest {
                 .when(eventPublisher).publishEvent(any(Object.class));
 
         // La excepción hace rollback de la transacción: el pedido no queda eliminado en la BD.
-        assertThatThrownBy(() -> service.eliminar(10L)).isInstanceOf(ServicioNoDisponibleException.class);
+        assertThatThrownBy(() -> service.eliminar(10L, TestData.operador())).isInstanceOf(ServicioNoDisponibleException.class);
     }
 }

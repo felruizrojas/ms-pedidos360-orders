@@ -8,9 +8,11 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -26,6 +28,7 @@ import com.pedidos360.orders.dto.CambiarEstadoRequest;
 import com.pedidos360.orders.dto.CrearPedidoRequest;
 import com.pedidos360.orders.dto.HistorialEstadoResponse;
 import com.pedidos360.orders.dto.ItemPedidoRequest;
+import com.pedidos360.orders.dto.MensajeComandoResponse;
 import com.pedidos360.orders.dto.PaginaResponse;
 import com.pedidos360.orders.dto.PedidoMapper;
 import com.pedidos360.orders.dto.PedidoResponse;
@@ -65,6 +68,7 @@ public class PedidoService {
     private final HistorialEstadoRepository historialRepository;
     private final CatalogClient catalogClient;
     private final ApplicationEventPublisher eventPublisher;
+    private final SeguimientoMensajes seguimiento;
     private final MaquinaEstadosPedido maquina = new MaquinaEstadosPedido();
 
     @Transactional
@@ -86,13 +90,20 @@ public class PedidoService {
 
         // saveAndFlush: un error de BD aparece antes de publicar. Si Rabbit falla, rollback y 503.
         Pedido guardado = pedidoRepository.saveAndFlush(pedido);
-        publicar(guardado, TipoEventoPedido.CREADO, null, ahora);
+        publicar(guardado, TipoEventoPedido.CREADO, null, usuario, ahora);
         return PedidoMapper.toResponse(guardado);
     }
 
     @Transactional(readOnly = true)
     public PedidoResponse obtener(Long id, Usuario usuario) {
-        return PedidoMapper.toResponse(obtenerVisible(id, usuario));
+        Pedido pedido = obtenerVisible(id, usuario);
+        return PedidoMapper.toResponse(pedido, !seguimiento.pedidosConFallas(List.of(pedido.getId())).isEmpty());
+    }
+
+    /** Ida y vuelta de los mensajes del pedido por RabbitMQ (solo Operador, ver controller). */
+    @Transactional(readOnly = true)
+    public List<MensajeComandoResponse> mensajes(Long id, Usuario usuario) {
+        return seguimiento.listar(obtenerVisible(id, usuario).getId());
     }
 
     @Transactional(readOnly = true)
@@ -104,9 +115,10 @@ public class PedidoService {
         String clienteId = usuario.esSoloCliente() ? usuario.id() : null;
         Pageable pageable = PageRequest.of(Math.max(pagina, 0), Math.clamp(tamano, 1, TAMANO_MAXIMO),
                 Sort.by(Sort.Direction.DESC, "creadoEn").and(Sort.by(Sort.Direction.DESC, "id")));
-        return PaginaResponse.de(
-                pedidoRepository.findAll(PedidoSpecifications.filtrar(clienteId, estado, desde, hasta), pageable),
-                PedidoMapper::toResponse);
+        Page<Pedido> page = pedidoRepository.findAll(PedidoSpecifications.filtrar(clienteId, estado, desde, hasta),
+                pageable);
+        Set<Long> conFallas = seguimiento.pedidosConFallas(page.map(Pedido::getId).getContent());
+        return PaginaResponse.de(page, p -> PedidoMapper.toResponse(p, conFallas.contains(p.getId())));
     }
 
     @Transactional
@@ -127,7 +139,7 @@ public class PedidoService {
         }
         // Mismo patrón que crear: si Rabbit falla, rollback y 503 (la edición no queda sin su aviso).
         Pedido guardado = pedidoRepository.saveAndFlush(pedido);
-        publicar(guardado, TipoEventoPedido.MODIFICADO, guardado.getEstado(), Instant.now());
+        publicar(guardado, TipoEventoPedido.MODIFICADO, guardado.getEstado(), usuario, Instant.now());
         return PedidoMapper.toResponse(guardado);
     }
 
@@ -175,7 +187,7 @@ public class PedidoService {
             // saveAndFlush: un conflicto de @Version (u otro error de BD) aparece aquí y no en el commit,
             // a tiempo para compensar el stock. Rabbit caído (503) también hace rollback y compensa.
             guardado = pedidoRepository.saveAndFlush(pedido);
-            publicar(guardado, TipoEventoPedido.ESTADO_CAMBIADO, anterior, ahora);
+            publicar(guardado, TipoEventoPedido.ESTADO_CAMBIADO, anterior, usuario, ahora);
         } catch (RuntimeException ex) {
             compensar(pedido.getId(), stock, descontado, repuesto, ex);
             throw ex;
@@ -196,7 +208,7 @@ public class PedidoService {
      * CANCELADO). Publica OrderDeleted: el cliente recibe el correo y el aviso en la app.
      */
     @Transactional
-    public void eliminar(Long id) {
+    public void eliminar(Long id, Usuario usuario) {
         Pedido pedido = pedidoRepository.findByIdAndEliminadoFalse(id)
                 .orElseThrow(() -> new PedidoNotFoundException(id));
         if (pedido.getEstado() != EstadoPedido.CREADO && pedido.getEstado() != EstadoPedido.CANCELADO) {
@@ -205,7 +217,7 @@ public class PedidoService {
         }
         pedido.setEliminado(true);
         Pedido guardado = pedidoRepository.saveAndFlush(pedido);
-        publicar(guardado, TipoEventoPedido.ELIMINADO, guardado.getEstado(), Instant.now());
+        publicar(guardado, TipoEventoPedido.ELIMINADO, guardado.getEstado(), usuario, Instant.now());
     }
 
     private Pedido obtenerVisible(Long id, Usuario usuario) {
@@ -309,8 +321,8 @@ public class PedidoService {
                 .build();
     }
 
-    private void publicar(Pedido pedido, TipoEventoPedido tipo, EstadoPedido anterior, Instant fecha) {
-        eventPublisher.publishEvent(
-                PedidoEstadoCambiadoEvent.de(pedido, tipo, anterior, fecha, MDC.get(RequestIdFilter.MDC_KEY)));
+    private void publicar(Pedido pedido, TipoEventoPedido tipo, EstadoPedido anterior, Usuario usuario, Instant fecha) {
+        eventPublisher.publishEvent(PedidoEstadoCambiadoEvent.de(pedido, tipo, anterior, usuario, fecha,
+                MDC.get(RequestIdFilter.MDC_KEY)));
     }
 }

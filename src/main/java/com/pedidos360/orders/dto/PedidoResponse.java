@@ -26,5 +26,7 @@ public record PedidoResponse(
         Instant entregadoEn,
         Instant canceladoEn,
         String motivoCancelacion,
-        Long version) {
+        Long version,
+        @Schema(description = "true si algún mensaje del pedido falló o quedó en la DLQ (ver /{id}/messages)")
+        boolean alertaMensajeria) {
 }

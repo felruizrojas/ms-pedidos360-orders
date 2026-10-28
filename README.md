@@ -47,6 +47,7 @@ Todos bajo `/api/orders`, exigen scope `access_as_user` y uno de los roles indic
 | PUT | `/api/orders/{id}` | Cliente (propio), Operador | Edita ítems y/o dirección **solo en CREADO** (si no, 409). Recalcula precios. Publica `OrderUpdated` y avisa al cliente |
 | PUT | `/api/orders/{id}/status` | Operador, Admin (+ Cliente) | Body `{"status":"ACEPTADO","comentario":"..."}`. Un Cliente solo puede pasar **su** pedido a CANCELADO y solo en CREADO |
 | GET | `/api/orders/{id}/history` | Admin, Operador, Cliente (propio) | Historial de estados, más antiguo primero |
+| GET | `/api/orders/{id}/messages` | Operador | Mensajería del pedido por RabbitMQ: cada comando publicado (`ENVIADO`, con quién hizo la acción y su rol) y lo que respondió notify (`PROCESADO`, `FALLIDO` con el motivo o `EN_DLQ`). `PedidoResponse.alertaMensajeria` = true si alguno falló |
 | DELETE | `/api/orders/{id}` | Operador | Borrado lógico (`eliminado = true`), solo en CREADO o CANCELADO → 204. Publica `OrderDeleted` y avisa al cliente |
 | GET | `/api/orders/notifications` | Operador, Cliente | Avisos en la app del usuario (últimos 20, más recientes primero): pedido cancelado, modificado o eliminado |
 | PUT | `/api/orders/notifications/read` | Operador, Cliente | Marca todos los avisos del usuario como leídos → 204 |
@@ -340,6 +341,8 @@ Sobre (igual para las 3 routing keys):
 ```
 - `eventId`: UUID **único por mensaje**; los consumidores lo usan para ser idempotentes (la entrega es al-menos-una-vez).
 - `estadoAnterior` es `null` en `OrderCreated`. En `OrderUpdated` y `OrderDeleted` el estado no cambia (`estadoAnterior` = `estadoNuevo`).
+- `usuarioId`, `usuarioNombre`, `usuarioRol`: **quién hizo la acción** (el Cliente al crear, editar o cancelar su pedido; el Operador al cambiar de estado, editar o eliminar).
+- **Vuelta (notify → orders):** por cada comando, notify publica en `evt.direct` (routing key `resultado.comando` → `q.orders.resultados`) un `ResultadoComando` `{eventId, comandoEventId, pedidoId, comando, type, resultado, motivo, cola, fecha, correlationId}` con `resultado` = `PROCESADO` (ACK), `FALLIDO` (NACK) o `EN_DLQ` (lo informa el listener de la DLQ, incluido lo que expiró por TTL). orders lo guarda en `mensaje_comando` y el operador lo ve en el detalle del pedido.
 - Al cancelar, editar o eliminar, el mismo evento deja además un aviso en la app (tabla `notificacion`) dentro de la misma transacción: si RabbitMQ no confirma, no queda ni el cambio ni el aviso (503).
 - `fecha`: momento del cambio de estado (el mismo valor del timestamp correspondiente en el pedido). `timestamp`: momento de publicación.
 - El payload es el mismo para las 3 routing keys: `email.send` usa `clienteEmail`/`clienteNombre`/estados, `kitchen.ticket` usa `items`, `invoice.gen` usa `items` y `total`.

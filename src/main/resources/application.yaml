@@ -69,6 +69,11 @@ pedidos360:
       email: email.send
       kitchen: kitchen.ticket
       invoice: invoice.gen
+    # Vuelta: notify publica aquí el resultado de cada comando y orders lo guarda por pedido (dashboard).
+    resultados:
+      exchange: evt.direct
+      queue: q.orders.resultados
+      routing-key: resultado.comando
     topic-patterns:
       email: "email.#"
       kitchen: "kitchen.#"
