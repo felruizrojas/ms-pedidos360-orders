@@ -340,3 +340,5 @@ Sobre (igual para las 3 routing keys):
 - `estadoAnterior` es `null` en `OrderCreated`.
 - `fecha`: momento del cambio de estado (el mismo valor del timestamp correspondiente en el pedido). `timestamp`: momento de publicación.
 - El payload es el mismo para las 3 routing keys: `email.send` usa `clienteEmail`/`clienteNombre`/estados, `kitchen.ticket` usa `items`, `invoice.gen` usa `items` y `total`.
+
+#evaluacion 2
