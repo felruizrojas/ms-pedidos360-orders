@@ -40,6 +40,7 @@ import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.exception.SolicitudInvalidaException;
 import com.pedidos360.orders.exception.TransicionInvalidaException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
+import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
 import com.pedidos360.orders.model.Pedido;
 import com.pedidos360.orders.repository.HistorialEstadoRepository;
@@ -323,6 +324,9 @@ class PedidoServiceTest {
         assertThat(r.items()).hasSize(1);
         assertThat(r.total()).isEqualByComparingTo("2600");
         assertThat(r.direccionEntrega()).isEqualTo("Av. Siempre Viva 742");
+        PedidoEstadoCambiadoEvent evento = eventoPublicado();
+        assertThat(evento.tipo()).isEqualTo(TipoEventoPedido.MODIFICADO);
+        assertThat(evento.estadoNuevo()).isEqualTo(EstadoPedido.CREADO);
     }
 
     @Test
@@ -340,5 +344,19 @@ class PedidoServiceTest {
         service.eliminar(10L);
 
         assertThat(pedido.isEliminado()).isTrue();
+        PedidoEstadoCambiadoEvent evento = eventoPublicado();
+        assertThat(evento.tipo()).isEqualTo(TipoEventoPedido.ELIMINADO);
+        assertThat(evento.clienteEmail()).isEqualTo(pedido.getClienteEmail());
+    }
+
+    @Test
+    void sinRabbitElBorradoNoSeConfirma() {
+        existente(EstadoPedido.CREADO);
+        guardarDevuelveElMismo();
+        doThrow(new ServicioNoDisponibleException("mensajería", new RuntimeException("caído")))
+                .when(eventPublisher).publishEvent(any(Object.class));
+
+        // La excepción hace rollback de la transacción: el pedido no queda eliminado en la BD.
+        assertThatThrownBy(() -> service.eliminar(10L)).isInstanceOf(ServicioNoDisponibleException.class);
     }
 }

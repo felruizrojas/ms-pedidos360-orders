@@ -11,7 +11,7 @@ import com.pedidos360.orders.model.Pedido;
 
 import jakarta.persistence.criteria.Predicate;
 
-/** Filtros opcionales del listado (null = sin filtro). */
+/** Filtros opcionales del listado (null = sin filtro). Nunca lista eliminados ni cancelados. */
 public final class PedidoSpecifications {
 
     private PedidoSpecifications() {
@@ -21,6 +21,8 @@ public final class PedidoSpecifications {
         return (root, query, cb) -> {
             List<Predicate> predicados = new ArrayList<>();
             predicados.add(cb.isFalse(root.get("eliminado")));
+            // Los cancelados desaparecen de la vista del cliente y del operador (siguen en la BD y por id).
+            predicados.add(cb.notEqual(root.get("estado"), EstadoPedido.CANCELADO));
             if (clienteId != null) {
                 predicados.add(cb.equal(root.get("clienteId"), clienteId));
             }

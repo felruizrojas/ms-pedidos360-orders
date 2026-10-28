@@ -84,7 +84,7 @@ public class PedidoController {
 
     @GetMapping
     @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
-    @Operation(summary = "Listar pedidos paginados, más recientes primero (un Cliente solo recibe los suyos)")
+    @Operation(summary = "Listar pedidos paginados, más recientes primero (un Cliente solo recibe los suyos; nunca cancelados ni eliminados)")
     public PaginaResponse<PedidoResponse> listar(
             @Parameter(description = "Filtra por estado", example = "CREADO")
             @RequestParam(required = false) EstadoPedido estado,
@@ -125,7 +125,7 @@ public class PedidoController {
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PreAuthorize("hasRole('Operador')")
-    @Operation(summary = "Borrado lógico (solo CREADO o CANCELADO)")
+    @Operation(summary = "Borrado lógico (solo CREADO o CANCELADO); avisa al cliente por correo y en la app")
     @ApiResponse(responseCode = "204", description = "Eliminado")
     public void eliminar(@PathVariable Long id) {
         pedidoService.eliminar(id);

@@ -299,6 +299,49 @@ class PedidoFlujoIntegrationTest {
     }
 
     @Test
+    void canceladoDesapareceDelListadoYAvisaAlCliente() throws Exception {
+        long id = crearComo("cliente-cancela");
+        mvc.perform(put(URL + "/" + id + "/status").with(usuario("cliente-cancela", "Cliente"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELADO\",\"comentario\":\"Ya no\"}"))
+                .andExpect(status().isOk());
+
+        mvc.perform(get(URL).with(usuario("cliente-cancela", "Cliente")))
+                .andExpect(jsonPath("$.contenido.length()").value(0));
+        String todos = mvc.perform(get(URL).with(operador()).param("size", "100"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(JsonPath.<List<Integer>>read(todos, "$.contenido[*].id")).doesNotContain((int) id);
+        mvc.perform(get(URL + "/notifications").with(usuario("cliente-cancela", "Cliente")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].pedidoId").value(id))
+                .andExpect(jsonPath("$[0].titulo").value("Pedido cancelado"))
+                .andExpect(jsonPath("$[0].leida").value(false));
+    }
+
+    @Test
+    void eliminarYEditarPublicanEnRabbitYAvisanEnLaApp() throws Exception {
+        long id = crearComo("cliente-avisos");
+        mvc.perform(put(URL + "/" + id).with(operador()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"direccionEntrega\":\"Otra 123\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(delete(URL + "/" + id).with(operador())).andExpect(status().isNoContent());
+
+        verificarPublicados("email.send", 3); // creado + modificado + eliminado
+        mvc.perform(get(URL + "/notifications").with(usuario("cliente-avisos", "Cliente")))
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].titulo").value("Pedido eliminado"))
+                .andExpect(jsonPath("$[1].titulo").value("Pedido modificado"));
+
+        mvc.perform(put(URL + "/notifications/read").with(usuario("cliente-avisos", "Cliente")))
+                .andExpect(status().isNoContent());
+        mvc.perform(get(URL + "/notifications").with(usuario("cliente-avisos", "Cliente")))
+                .andExpect(jsonPath("$[0].leida").value(true))
+                .andExpect(jsonPath("$[1].leida").value(true));
+        // Cada usuario ve solo sus avisos.
+        mvc.perform(get(URL + "/notifications").with(usuario("otro-cliente", "Cliente")))
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
     void healthEsPublico() throws Exception {
         mvc.perform(get("/actuator/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UP"));
     }

@@ -34,6 +34,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
+import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
 import com.pedidos360.orders.support.RabbitMock;
 
@@ -56,7 +57,11 @@ class PedidoCommandPublisherTest {
     }
 
     static PedidoEstadoCambiadoEvent evento(EstadoPedido anterior, EstadoPedido nuevo) {
-        return new PedidoEstadoCambiadoEvent(15L, "cliente-1", "Ana", "ana@pedidos360.cl", anterior, nuevo,
+        return evento(anterior == null ? TipoEventoPedido.CREADO : TipoEventoPedido.ESTADO_CAMBIADO, anterior, nuevo);
+    }
+
+    static PedidoEstadoCambiadoEvent evento(TipoEventoPedido tipo, EstadoPedido anterior, EstadoPedido nuevo) {
+        return new PedidoEstadoCambiadoEvent(tipo, 15L, "cliente-1", "Ana", "ana@pedidos360.cl", anterior, nuevo,
                 new BigDecimal("2700.00"),
                 List.of(new PedidoEstadoCambiadoEvent.Item(1L, "Pan Amasado", 2, new BigDecimal("600.00"),
                         new BigDecimal("1200.00"))),
@@ -124,6 +129,38 @@ class PedidoCommandPublisherTest {
         verify(rabbitTemplate).convertAndSend(anyString(), anyString(), sobre.capture(),
                 any(MessagePostProcessor.class), any(CorrelationData.class));
         assertThat(((CommandEnvelope) sobre.getValue()).type()).isEqualTo("OrderCreated");
+    }
+
+    static Stream<Arguments> edicionYBorrado() {
+        return Stream.of(
+                Arguments.of(TipoEventoPedido.MODIFICADO, EstadoPedido.CREADO, "OrderUpdated"),
+                Arguments.of(TipoEventoPedido.ELIMINADO, EstadoPedido.CREADO, "OrderDeleted"),
+                // Aunque el estado sea uno que gatilla cocina/boleta, editar o eliminar solo avisa por correo.
+                Arguments.of(TipoEventoPedido.ELIMINADO, EstadoPedido.CANCELADO, "OrderDeleted"));
+    }
+
+    @ParameterizedTest(name = "{0} en {1} publica solo email.send con type {2}")
+    @MethodSource("edicionYBorrado")
+    void edicionYBorradoSoloPublicanEmail(TipoEventoPedido tipo, EstadoPedido estado, String type) {
+        publisher.publicar(evento(tipo, estado, estado));
+
+        ArgumentCaptor<String> routingKey = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> sobre = ArgumentCaptor.forClass(Object.class);
+        verify(rabbitTemplate).convertAndSend(anyString(), routingKey.capture(), sobre.capture(),
+                any(MessagePostProcessor.class), any(CorrelationData.class));
+        assertThat(routingKey.getValue()).isEqualTo("email.send");
+        assertThat(((CommandEnvelope) sobre.getValue()).type()).isEqualTo(type);
+    }
+
+    @Test
+    void entregadoNoSeRepiteAlEditar() {
+        publisher.publicar(evento(TipoEventoPedido.MODIFICADO, EstadoPedido.ENTREGADO, EstadoPedido.ENTREGADO));
+
+        verify(rabbitTemplate).convertAndSend(anyString(), org.mockito.ArgumentMatchers.eq("email.send"),
+                any(Object.class), any(MessagePostProcessor.class), any(CorrelationData.class));
+        verify(rabbitTemplate, org.mockito.Mockito.never()).convertAndSend(anyString(),
+                org.mockito.ArgumentMatchers.eq("invoice.gen"), any(Object.class), any(MessagePostProcessor.class),
+                any(CorrelationData.class));
     }
 
     @Test

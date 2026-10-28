@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
+import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
 
 import lombok.RequiredArgsConstructor;
@@ -20,7 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Publica en cmd.direct (mensajes persistentes):
  * <ul>
- * <li>email.send: siempre (creación y cada cambio de estado)</li>
+ * <li>email.send: siempre (creación, cada cambio de estado, edición y eliminación)</li>
  * <li>kitchen.ticket: al pasar a ACEPTADO</li>
  * <li>invoice.gen: al pasar a ENTREGADO</li>
  * </ul>
@@ -34,6 +35,8 @@ public class PedidoCommandPublisher {
 
     public static final String TYPE_ORDER_CREATED = "OrderCreated";
     public static final String TYPE_ORDER_STATUS_CHANGED = "OrderStatusChanged";
+    public static final String TYPE_ORDER_UPDATED = "OrderUpdated";
+    public static final String TYPE_ORDER_DELETED = "OrderDeleted";
     public static final String TYPE_KITCHEN_TICKET = "KitchenTicketRequested";
     public static final String TYPE_INVOICE = "InvoiceRequested";
 
@@ -45,14 +48,25 @@ public class PedidoCommandPublisher {
         String correlationId = evento.correlationId() != null ? evento.correlationId() : UUID.randomUUID().toString();
         RabbitProperties.Destinos rk = properties.routingKeys();
 
-        enviar(rk.email(), evento.estadoAnterior() == null ? TYPE_ORDER_CREATED : TYPE_ORDER_STATUS_CHANGED,
-                payload, correlationId);
+        enviar(rk.email(), typeEmail(evento.tipo()), payload, correlationId);
+        if (evento.tipo() != TipoEventoPedido.ESTADO_CAMBIADO) {
+            return; // cocina y boleta solo reaccionan a transiciones de estado
+        }
         if (evento.estadoNuevo() == EstadoPedido.ACEPTADO) {
             enviar(rk.kitchen(), TYPE_KITCHEN_TICKET, payload, correlationId);
         }
         if (evento.estadoNuevo() == EstadoPedido.ENTREGADO) {
             enviar(rk.invoice(), TYPE_INVOICE, payload, correlationId);
         }
+    }
+
+    private static String typeEmail(TipoEventoPedido tipo) {
+        return switch (tipo) {
+            case CREADO -> TYPE_ORDER_CREATED;
+            case ESTADO_CAMBIADO -> TYPE_ORDER_STATUS_CHANGED;
+            case MODIFICADO -> TYPE_ORDER_UPDATED;
+            case ELIMINADO -> TYPE_ORDER_DELETED;
+        };
     }
 
     private void enviar(String routingKey, String type, PedidoComandoPayload payload, String correlationId) {

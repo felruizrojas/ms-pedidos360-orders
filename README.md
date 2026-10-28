@@ -43,11 +43,13 @@ Todos bajo `/api/orders`, exigen scope `access_as_user` y uno de los roles indic
 |---|---|---|---|
 | POST | `/api/orders` | Cliente, Operador | Crea en CREADO. Nombre y precio desde catalog (el precio que envíe el cliente se ignora). No toca stock. → 201 |
 | GET | `/api/orders/{id}` | Admin, Operador, Cliente | Un Cliente solo ve sus pedidos (ajeno → 404) |
-| GET | `/api/orders?estado=&desde=&hasta=&page=&size=` | Admin, Operador, Cliente | Paginado, `creadoEn` desc. Un Cliente solo recibe los suyos |
-| PUT | `/api/orders/{id}` | Cliente (propio), Operador | Edita ítems y/o dirección **solo en CREADO** (si no, 409). Recalcula precios |
+| GET | `/api/orders?estado=&desde=&hasta=&page=&size=` | Admin, Operador, Cliente | Paginado, `creadoEn` desc. Un Cliente solo recibe los suyos. **Nunca** incluye cancelados ni eliminados (siguen en la BD; un cancelado se puede abrir por id) |
+| PUT | `/api/orders/{id}` | Cliente (propio), Operador | Edita ítems y/o dirección **solo en CREADO** (si no, 409). Recalcula precios. Publica `OrderUpdated` y avisa al cliente |
 | PUT | `/api/orders/{id}/status` | Operador, Admin (+ Cliente) | Body `{"status":"ACEPTADO","comentario":"..."}`. Un Cliente solo puede pasar **su** pedido a CANCELADO y solo en CREADO |
 | GET | `/api/orders/{id}/history` | Admin, Operador, Cliente (propio) | Historial de estados, más antiguo primero |
-| DELETE | `/api/orders/{id}` | Admin | Borrado lógico, solo en CREADO o CANCELADO → 204 |
+| DELETE | `/api/orders/{id}` | Operador | Borrado lógico (`eliminado = true`), solo en CREADO o CANCELADO → 204. Publica `OrderDeleted` y avisa al cliente |
+| GET | `/api/orders/notifications` | Operador, Cliente | Avisos en la app del usuario (últimos 20, más recientes primero): pedido cancelado, modificado o eliminado |
+| PUT | `/api/orders/notifications/read` | Operador, Cliente | Marca todos los avisos del usuario como leídos → 204 |
 | GET | `/actuator/health`, `/swagger-ui.html`, `/v3/api-docs` | público | |
 
 Códigos: **400** validación (con `detalles`) o producto inexistente en catalog · **401** token ausente/inválido/expirado · **403** falta scope o rol · **404** no existe, eliminado o ajeno · **409** transición inválida, stock insuficiente, pedido no editable o modificado en paralelo (`@Version`) · **503** catalog caído, timeout o 5xx, o RabbitMQ caído / sin confirmar la publicación (el pedido no se crea ni cambia de estado).
@@ -306,7 +308,7 @@ Ambos campos opcionales (al menos uno). `items`, si viene, **reemplaza** todos l
 ### Mensajes RabbitMQ (exchange `cmd.direct`)
 | Routing key → cola | Cuándo | `type` |
 |---|---|---|
-| `email.send` → `q.cmd.email` | Al crear y en **cada** cambio de estado | `OrderCreated` (al crear) / `OrderStatusChanged` |
+| `email.send` → `q.cmd.email` | Al crear, en **cada** cambio de estado (incluida la cancelación), al editar y al eliminar | `OrderCreated` / `OrderStatusChanged` / `OrderUpdated` / `OrderDeleted` |
 | `kitchen.ticket` → `q.cmd.kitchen` | Al pasar a ACEPTADO (además del email) | `KitchenTicketRequested` |
 | `invoice.gen` → `q.cmd.invoice` | Al pasar a ENTREGADO (además del email) | `InvoiceRequested` |
 
@@ -337,7 +339,8 @@ Sobre (igual para las 3 routing keys):
 }
 ```
 - `eventId`: UUID **único por mensaje**; los consumidores lo usan para ser idempotentes (la entrega es al-menos-una-vez).
-- `estadoAnterior` es `null` en `OrderCreated`.
+- `estadoAnterior` es `null` en `OrderCreated`. En `OrderUpdated` y `OrderDeleted` el estado no cambia (`estadoAnterior` = `estadoNuevo`).
+- Al cancelar, editar o eliminar, el mismo evento deja además un aviso en la app (tabla `notificacion`) dentro de la misma transacción: si RabbitMQ no confirma, no queda ni el cambio ni el aviso (503).
 - `fecha`: momento del cambio de estado (el mismo valor del timestamp correspondiente en el pedido). `timestamp`: momento de publicación.
 - El payload es el mismo para las 3 routing keys: `email.send` usa `clienteEmail`/`clienteNombre`/estados, `kitchen.ticket` usa `items`, `invoice.gen` usa `items` y `total`.
 

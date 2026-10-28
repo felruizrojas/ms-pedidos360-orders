@@ -34,6 +34,7 @@ import com.pedidos360.orders.exception.PedidoNotFoundException;
 import com.pedidos360.orders.exception.ProductoNoEncontradoEnCatalogoException;
 import com.pedidos360.orders.exception.SolicitudInvalidaException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
+import com.pedidos360.orders.messaging.TipoEventoPedido;
 import com.pedidos360.orders.model.EstadoPedido;
 import com.pedidos360.orders.model.HistorialEstado;
 import com.pedidos360.orders.model.ItemPedido;
@@ -85,7 +86,7 @@ public class PedidoService {
 
         // saveAndFlush: un error de BD aparece antes de publicar. Si Rabbit falla, rollback y 503.
         Pedido guardado = pedidoRepository.saveAndFlush(pedido);
-        publicar(guardado, null, ahora);
+        publicar(guardado, TipoEventoPedido.CREADO, null, ahora);
         return PedidoMapper.toResponse(guardado);
     }
 
@@ -124,7 +125,10 @@ public class PedidoService {
         if (request.items() != null) {
             pedido.reemplazarItems(resolverItems(request.items()));
         }
-        return PedidoMapper.toResponse(pedidoRepository.saveAndFlush(pedido));
+        // Mismo patrón que crear: si Rabbit falla, rollback y 503 (la edición no queda sin su aviso).
+        Pedido guardado = pedidoRepository.saveAndFlush(pedido);
+        publicar(guardado, TipoEventoPedido.MODIFICADO, guardado.getEstado(), Instant.now());
+        return PedidoMapper.toResponse(guardado);
     }
 
     /**
@@ -171,7 +175,7 @@ public class PedidoService {
             // saveAndFlush: un conflicto de @Version (u otro error de BD) aparece aquí y no en el commit,
             // a tiempo para compensar el stock. Rabbit caído (503) también hace rollback y compensa.
             guardado = pedidoRepository.saveAndFlush(pedido);
-            publicar(guardado, anterior, ahora);
+            publicar(guardado, TipoEventoPedido.ESTADO_CAMBIADO, anterior, ahora);
         } catch (RuntimeException ex) {
             compensar(pedido.getId(), stock, descontado, repuesto, ex);
             throw ex;
@@ -187,7 +191,10 @@ public class PedidoService {
                 .toList();
     }
 
-    /** Borrado lógico; solo pedidos que no comprometen stock (CREADO o CANCELADO). */
+    /**
+     * Borrado lógico (la fila queda con eliminado = true); solo pedidos que no comprometen stock (CREADO o
+     * CANCELADO). Publica OrderDeleted: el cliente recibe el correo y el aviso en la app.
+     */
     @Transactional
     public void eliminar(Long id) {
         Pedido pedido = pedidoRepository.findByIdAndEliminadoFalse(id)
@@ -197,7 +204,8 @@ public class PedidoService {
                     + pedido.getEstado() + ")");
         }
         pedido.setEliminado(true);
-        pedidoRepository.saveAndFlush(pedido);
+        Pedido guardado = pedidoRepository.saveAndFlush(pedido);
+        publicar(guardado, TipoEventoPedido.ELIMINADO, guardado.getEstado(), Instant.now());
     }
 
     private Pedido obtenerVisible(Long id, Usuario usuario) {
@@ -301,8 +309,8 @@ public class PedidoService {
                 .build();
     }
 
-    private void publicar(Pedido pedido, EstadoPedido anterior, Instant fecha) {
+    private void publicar(Pedido pedido, TipoEventoPedido tipo, EstadoPedido anterior, Instant fecha) {
         eventPublisher.publishEvent(
-                PedidoEstadoCambiadoEvent.de(pedido, anterior, fecha, MDC.get(RequestIdFilter.MDC_KEY)));
+                PedidoEstadoCambiadoEvent.de(pedido, tipo, anterior, fecha, MDC.get(RequestIdFilter.MDC_KEY)));
     }
 }
