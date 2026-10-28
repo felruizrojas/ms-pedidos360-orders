@@ -13,7 +13,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Converter JSON con Jackson 3 (el mismo JsonMapper de Spring Boot: fechas ISO-8601) y un RabbitTemplate
  * con mandatory=true + publisher confirms/returns (spring.rabbitmq.publisher-confirm-type=correlated,
- * publisher-returns=true): si el broker no confirma o no puede enrutar un mensaje queda en el log.
+ * publisher-returns=true). Los publishers esperan cada confirm (ConfirmacionBroker) y fallan si no llega;
+ * estos callbacks solo dejan el detalle en el log.
  */
 @Slf4j
 @Configuration

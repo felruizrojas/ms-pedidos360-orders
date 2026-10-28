@@ -3,12 +3,14 @@ package com.pedidos360.orders.messaging.rabbit;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
+import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
 import com.pedidos360.orders.model.EstadoPedido;
 
@@ -22,6 +24,8 @@ import lombok.extern.slf4j.Slf4j;
  * <li>kitchen.ticket: al pasar a ACEPTADO</li>
  * <li>invoice.gen: al pasar a ENTREGADO</li>
  * </ul>
+ * Cada mensaje espera el publisher confirm del broker: si Rabbit no está, no confirma o no hay cola donde
+ * enrutar, lanza ServicioNoDisponibleException y el pedido hace rollback (503).
  */
 @Slf4j
 @Component
@@ -55,15 +59,21 @@ public class PedidoCommandPublisher {
         // Sin librería de tracing distribuido, el traceId es el mismo X-Request-Id que viaja por todo el flujo.
         CommandEnvelope envelope = new CommandEnvelope(type, UUID.randomUUID().toString(), Instant.now(),
                 correlationId, correlationId, payload);
-        rabbitTemplate.convertAndSend(properties.exchanges().direct(), routingKey, envelope, message -> {
-            MessageProperties props = message.getMessageProperties();
-            props.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
-            props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-            props.setType(type);
-            props.setCorrelationId(correlationId);
-            props.setMessageId(correlationId);
-            return message;
-        }, new CorrelationData(envelope.eventId()));
+        CorrelationData confirmacion = new CorrelationData(envelope.eventId());
+        try {
+            rabbitTemplate.convertAndSend(properties.exchanges().direct(), routingKey, envelope, message -> {
+                MessageProperties props = message.getMessageProperties();
+                props.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+                props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+                props.setType(type);
+                props.setCorrelationId(correlationId);
+                props.setMessageId(correlationId);
+                return message;
+            }, confirmacion);
+        } catch (AmqpException ex) {
+            throw new ServicioNoDisponibleException("mensajería", ex);
+        }
+        ConfirmacionBroker.esperar(confirmacion, properties.confirmTimeout());
         log.info("Comando {} publicado: routingKey={} pedidoId={} estado={} eventId={}",
                 type, routingKey, payload.pedidoId(), payload.estadoNuevo(), envelope.eventId());
     }

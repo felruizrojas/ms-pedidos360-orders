@@ -24,6 +24,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.AmqpConnectException;
 import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -43,10 +44,11 @@ import com.pedidos360.orders.client.CatalogClient;
 import com.pedidos360.orders.client.ProductoCatalogo;
 import com.pedidos360.orders.client.StockItem;
 import com.pedidos360.orders.exception.ConflictoException;
+import com.pedidos360.orders.support.RabbitMock;
 
 /**
- * Flujo real (controller + seguridad + servicio + JPA sobre H2 + listener AFTER_COMMIT) con
- * catalog y RabbitTemplate mockeados: no requiere PostgreSQL, RabbitMQ ni Azure.
+ * Flujo real (controller + seguridad + servicio + JPA sobre H2 + listener de Rabbit en la transacción) con
+ * catalog y RabbitTemplate mockeados (confirma cada mensaje): no requiere PostgreSQL, RabbitMQ ni Azure.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -69,6 +71,7 @@ class PedidoFlujoIntegrationTest {
 
     @BeforeEach
     void catalogConProductos() {
+        RabbitMock.confirmaTodo(rabbitTemplate);
         when(catalogClient.buscarProducto(1L)).thenReturn(new ProductoCatalogo(1L, "Pan Amasado", new BigDecimal("600"), 80));
         when(catalogClient.buscarProducto(4L)).thenReturn(new ProductoCatalogo(4L, "Café Americano", new BigDecimal("1500"), 60));
     }
@@ -172,6 +175,37 @@ class PedidoFlujoIntegrationTest {
     }
 
     @Test
+    void rabbitCaidoAlCrearDa503YNoGuardaElPedido() throws Exception {
+        doThrow(new AmqpConnectException(new java.net.ConnectException("Connection refused")))
+                .when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class),
+                        any(MessagePostProcessor.class), any(CorrelationData.class));
+
+        mvc.perform(post(URL).with(usuario("cliente-sin-rabbit", "Cliente")).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"direccionEntrega\":\"Dir\",\"items\":[{\"productoId\":1,\"cantidad\":1}]}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.mensaje").value("Servicio de mensajería no disponible"));
+
+        mvc.perform(get(URL).with(usuario("cliente-sin-rabbit", "Cliente")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contenido.length()").value(0));
+    }
+
+    @Test
+    void rabbitCaidoAlAceptarDa503ReponeStockYSigueEnCreado() throws Exception {
+        long id = crearComo("cliente-acepta-sin-rabbit");
+        RabbitMock.rechazaTodo(rabbitTemplate);
+
+        cambiar(id, "ACEPTADO").andExpect(status().isServiceUnavailable());
+
+        List<StockItem> items = List.of(new StockItem(1L, 2), new StockItem(4L, 1));
+        verify(catalogClient).descontarStock(items);
+        verify(catalogClient).reponerStock(items);
+        mvc.perform(get(URL + "/" + id).with(operador()))
+                .andExpect(jsonPath("$.estado").value("CREADO"))
+                .andExpect(jsonPath("$.stockDescontado").value(false));
+    }
+
+    @Test
     void cancelarDesdeAceptadoReponeStock() throws Exception {
         long id = crearComo("cliente-cancela");
         cambiar(id, "ACEPTADO").andExpect(status().isOk());
@@ -258,9 +292,9 @@ class PedidoFlujoIntegrationTest {
     }
 
     @Test
-    void adminEliminaLogicamenteYLuegoEs404() throws Exception {
+    void operadorEliminaLogicamenteYLuegoEs404() throws Exception {
         long id = crearComo("cliente-borra");
-        mvc.perform(delete(URL + "/" + id).with(usuario("admin-1", "Admin"))).andExpect(status().isNoContent());
+        mvc.perform(delete(URL + "/" + id).with(operador())).andExpect(status().isNoContent());
         mvc.perform(get(URL + "/" + id).with(operador())).andExpect(status().isNotFound());
     }
 

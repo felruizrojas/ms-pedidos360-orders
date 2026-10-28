@@ -1,19 +1,23 @@
 package com.pedidos360.orders.messaging.rabbit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -21,26 +25,35 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.AmqpConnectException;
 import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.ReturnedMessage;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
+import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
 import com.pedidos360.orders.model.EstadoPedido;
+import com.pedidos360.orders.support.RabbitMock;
 
-/** Routing key según el estado, sobre del mensaje y propiedades AMQP. RabbitTemplate mockeado. */
+/** Routing key según el estado, sobre del mensaje, propiedades AMQP y confirms. RabbitTemplate mockeado. */
 class PedidoCommandPublisherTest {
 
     static final RabbitProperties PROPS = new RabbitProperties(true,
             new RabbitProperties.Exchanges("cmd.direct", "cmd.topic", "cmd.dead.dlx"),
             new RabbitProperties.Destinos("q.cmd.email", "q.cmd.kitchen", "q.cmd.invoice"),
             new RabbitProperties.Destinos("email.send", "kitchen.ticket", "invoice.gen"),
-            new RabbitProperties.Destinos("email.#", "kitchen.#", "invoice.*"));
+            new RabbitProperties.Destinos("email.#", "kitchen.#", "invoice.*"),
+            Duration.ofMillis(200));
 
     private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
     private final PedidoCommandPublisher publisher = new PedidoCommandPublisher(rabbitTemplate, PROPS);
+
+    @BeforeEach
+    void brokerConfirma() {
+        RabbitMock.confirmaTodo(rabbitTemplate);
+    }
 
     static PedidoEstadoCambiadoEvent evento(EstadoPedido anterior, EstadoPedido nuevo) {
         return new PedidoEstadoCambiadoEvent(15L, "cliente-1", "Ana", "ana@pedidos360.cl", anterior, nuevo,
@@ -114,13 +127,47 @@ class PedidoCommandPublisherTest {
     }
 
     @Test
-    void elListenerNoPropagaErroresDeRabbit() {
+    void rabbitCaidoSePropagaComoServicioNoDisponible() {
         doThrow(new AmqpConnectException(new java.net.ConnectException("Connection refused")))
                 .when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class),
                         any(MessagePostProcessor.class), any(CorrelationData.class));
         PedidoCommandListener listener = new PedidoCommandListener(publisher);
 
-        assertThatCode(() -> listener.onPedidoEstadoCambiado(evento(EstadoPedido.CREADO, EstadoPedido.ACEPTADO)))
-                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> listener.onPedidoEstadoCambiado(evento(EstadoPedido.CREADO, EstadoPedido.ACEPTADO)))
+                .isInstanceOf(ServicioNoDisponibleException.class);
+    }
+
+    @Test
+    void nackDelBrokerEsServicioNoDisponible() {
+        RabbitMock.rechazaTodo(rabbitTemplate);
+
+        assertThatThrownBy(() -> publisher.publicar(evento(null, EstadoPedido.CREADO)))
+                .isInstanceOf(ServicioNoDisponibleException.class)
+                .cause().hasMessageContaining("nack");
+    }
+
+    @Test
+    void sinConfirmacionATiempoEsServicioNoDisponible() {
+        doNothing().when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class),
+                any(MessagePostProcessor.class), any(CorrelationData.class));
+
+        assertThatThrownBy(() -> publisher.publicar(evento(null, EstadoPedido.CREADO)))
+                .isInstanceOf(ServicioNoDisponibleException.class)
+                .cause().hasMessageContaining("no confirmó");
+    }
+
+    @Test
+    void mensajeNoEnrutableEsServicioNoDisponible() {
+        doAnswer(inv -> {
+            CorrelationData cd = inv.getArgument(4);
+            cd.setReturned(new ReturnedMessage(new Message(new byte[0]), 312, "NO_ROUTE", "cmd.direct", "email.send"));
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class),
+                any(MessagePostProcessor.class), any(CorrelationData.class));
+
+        assertThatThrownBy(() -> publisher.publicar(evento(null, EstadoPedido.CREADO)))
+                .isInstanceOf(ServicioNoDisponibleException.class)
+                .cause().hasMessageContaining("NO_ROUTE");
     }
 }

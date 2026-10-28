@@ -7,11 +7,11 @@ Coordina el stock con **ms-pedidos360-catalog** (8081) y **produce comandos** en
 ## Qué cubre de la evaluación
 | Requisito | Implementación |
 |---|---|
-| Microservicio Spring Boot que compila y pasa pruebas | `./mvnw clean verify` (128 tests; H2, sin PostgreSQL, RabbitMQ, Kafka ni Azure) |
+| Microservicio Spring Boot que compila y pasa pruebas | `./mvnw clean verify` (135 tests; H2, sin PostgreSQL, RabbitMQ, Kafka ni Azure) |
 | Integración con BD | Entidades `Pedido`, `ItemPedido`, `HistorialEstado` (JPA), base `pedidos360_orders` |
 | Máquina de estados | `MaquinaEstadosPedido` (Java puro, 36 combinaciones testeadas). "No se puede despachar un pedido que no fue aceptado" → 409 |
 | Integración entre microservicios | `CatalogClient` (RestClient): precios al crear, descuento de stock al **aceptar**, reposición al **cancelar** |
-| Mensajería (RabbitMQ) | Productor de comandos `email.send`, `kitchen.ticket`, `invoice.gen` en `cmd.direct`, publicados **después del commit** |
+| Mensajería (RabbitMQ) | Productor de comandos `email.send`, `kitchen.ticket`, `invoice.gen` en `cmd.direct`, publicados **dentro de la transacción con publisher confirm**: sin Rabbit el pedido no se guarda (503) |
 | Guía Parte 2 (Postman) | `POST /api/orders/test-notification` publica un `NotificationMessage` en `cmd.direct`/`email.send` (ver [Notificación de prueba](#notificación-de-prueba-guía-parte-2)) |
 | Filtro que valida el JWT del IDaaS | OAuth2 Resource Server: firma (JWKS de Entra ID), `exp/nbf`, `issuer`, `audience`, scope `access_as_user` |
 | Autorización | `@PreAuthorize` por rol (`Admin`, `Operador`, `Cliente`) + verificación de dueño en el servicio |
@@ -50,7 +50,7 @@ Todos bajo `/api/orders`, exigen scope `access_as_user` y uno de los roles indic
 | DELETE | `/api/orders/{id}` | Admin | Borrado lógico, solo en CREADO o CANCELADO → 204 |
 | GET | `/actuator/health`, `/swagger-ui.html`, `/v3/api-docs` | público | |
 
-Códigos: **400** validación (con `detalles`) o producto inexistente en catalog · **401** token ausente/inválido/expirado · **403** falta scope o rol · **404** no existe, eliminado o ajeno · **409** transición inválida, stock insuficiente, pedido no editable o modificado en paralelo (`@Version`) · **503** catalog caído, timeout o 5xx.
+Códigos: **400** validación (con `detalles`) o producto inexistente en catalog · **401** token ausente/inválido/expirado · **403** falta scope o rol · **404** no existe, eliminado o ajeno · **409** transición inválida, stock insuficiente, pedido no editable o modificado en paralelo (`@Version`) · **503** catalog caído, timeout o 5xx, o RabbitMQ caído / sin confirmar la publicación (el pedido no se crea ni cambia de estado).
 
 ## Variables de entorno
 | Variable | Default |
@@ -61,14 +61,17 @@ Códigos: **400** validación (con `detalles`) o producto inexistente en catalog
 | `ENTRA_API_CLIENT_ID` (audience) | `d80d5009-1b8a-49b2-a3da-08a8bbd00936` |
 | `CATALOG_BASE_URL` | `http://localhost:8081` |
 | `SERVICES_CONNECT_TIMEOUT` / `SERVICES_READ_TIMEOUT` | `2s` / `5s` |
-| `RABBIT_ADDRESSES` | `localhost:5672` (en AWS: `ip-nodo1:5672,ip-nodo2:5672`) |
+| `RABBIT_ADDRESSES` | `localhost:5672` (clúster de `infra/mq`: `host:5672,host:5673`) |
 | `RABBIT_USERNAME` / `RABBIT_PASSWORD` | `guest` / `guest` (solo local; en AWS un usuario propio) |
 | `RABBIT_DECLARE_TOPOLOGY` | `true` (pasará a `false` cuando la declare el microservicio administrador) |
+| `RABBIT_CONNECTION_TIMEOUT` | `3s` (espera por nodo antes de pasar al siguiente de `RABBIT_ADDRESSES`) |
+| `RABBIT_CONFIRM_TIMEOUT` | `5s` (espera máxima del publisher confirm; sin él → 503 y rollback) |
 | `CORS_ALLOWED_ORIGINS` | vacío (sin CORS: el navegador llama al BFF, no a orders) |
 
 ## Topología RabbitMQ
-RabbitMQ **no** corre junto a orders: en AWS es un clúster de 2 nodos en su propia EC2 (`infra/mq/`, se define después).
-Si RabbitMQ no está disponible la app **arranca igual** y `/actuator/health` sigue en UP (`management.health.rabbit.enabled=false`).
+RabbitMQ **no** corre junto a orders: en AWS es un clúster de 2 nodos en su propia EC2 (`infra/mq/`), con las colas **espejadas** en ambos nodos: si cae cualquiera, el otro sigue recibiendo los comandos sin perder mensajes.
+Si RabbitMQ no está disponible la app **arranca igual** y `/actuator/health` sigue en UP (`management.health.rabbit.enabled=false`), pero **crear o cambiar el estado de un pedido responde 503 y no se guarda nada**: todo pedido pasa por Rabbit, nunca queda guardado sin su comando en la cola.
+Con `RABBIT_ADDRESSES=nodo1:5672,nodo2:5672`, si un nodo no responde la conexión se abre contra el otro (`RABBIT_CONNECTION_TIMEOUT` por nodo).
 Con `RABBIT_DECLARE_TOPOLOGY=true`, orders declara todo al abrir su **primera** conexión, o sea, al publicar el primer mensaje (no al arrancar).
 
 | Exchange | Tipo | Durable |
@@ -107,7 +110,7 @@ Content-Type: application/json
 
 { "pedidoId": 501, "email": "cliente@ejemplo.cl", "asunto": "Pedido confirmado", "mensaje": "Su pedido 501 ha sido confirmado" }
 ```
-- Responde **202** `Solicitud de notificacion publicada`, 400 si falta un campo o el email no es válido, 401/403 sin token válido o sin rol, y 503 si RabbitMQ no responde. Un 202 significa que se solicitó la publicación, no que el correo se procesó.
+- Responde **202** `Solicitud de notificacion publicada`, 400 si falta un campo o el email no es válido, 401/403 sin token válido o sin rol, y 503 si RabbitMQ no responde o no confirma. Un 202 significa que RabbitMQ confirmó el mensaje en la cola, no que el correo se procesó.
 - **Pide token**, a diferencia de la guía: el mismo JWT que el resto de `/api/orders/**` (scope `access_as_user`) y cualquier rol de la aplicación (`Admin`, `Operador` o `Cliente`). En Postman: *Authorization* → *Bearer Token* (el token se copia desde el front, ver `requests.http`).
 - Publica el JSON **tal cual**, sin el sobre de los comandos, con la propiedad AMQP `type=TestNotification` (persistente, `content_type=application/json`). Notify reconoce ese `type` y solo registra `Notificacion recibida` / `Pedido` / `Destinatario` / `Asunto` / `Mensaje` y hace ACK, como el `NotificationConsumer` de la guía. No envía correo.
 - Con notify detenido, `q.cmd.email` queda en *Ready = 1*. Al iniciarlo pasa a *Ready 0, Unacked 0, Consumers 1* (tabla de la sección 14 de la guía).
@@ -142,7 +145,7 @@ docker compose up -d --build                           # orders + PostgreSQL loc
 ```
 - `docker-compose.yml`: solo `orders` (imagen `ghcr.io/felruizrojas/ms-pedidos360-orders:latest`). Es el que se usa en la EC2.
 - `docker-compose.override.yml`: solo local. Agrega `build: .` y un PostgreSQL 17 con volumen y healthcheck (host 5433).
-- `docker-compose.rabbitmq.yml`: solo local, un nodo `rabbitmq:4-management` que al arrancar crea las 3 policies `policy.*.dlx` (`post_start`, requiere Docker Compose 2.30 o superior). Orders lo alcanza por `RABBIT_ADDRESSES=host.docker.internal:5672`.
+- `docker-compose.rabbitmq.yml`: solo local, un nodo `rabbitmq:3.13-management` (misma versión que el clúster) que al arrancar crea las mismas 4 policies de `infra/mq` (`policy.*.dlx` y `policy.dlq.ha`) (`post_start`, requiere Docker Compose 2.30 o superior). Orders lo alcanza por `RABBIT_ADDRESSES=host.docker.internal:5672`.
 
 ## Swagger (OpenAPI)
 | | |
@@ -198,8 +201,8 @@ curl -i -X DELETE "${H[@]}" $BASE/api/orders/2                                  
 
 ## Decisiones de diseño
 - **Stock al aceptar, todo o nada**: orders manda todos los ítems en un solo `POST /stock/decrease`; catalog lo hace en una transacción con `UPDATE ... WHERE stock >= :cantidad`. Si no alcanza → 409, el pedido sigue en CREADO y no se publica nada.
-- **Orden en `cambiarEstado`**: 1) validar con la máquina de estados, 2) llamar a catalog, 3) `saveAndFlush` (para que un conflicto de `@Version` aparezca antes del commit), 4) si el guardado falla después de descontar, **compensa** reponiendo el stock y lo registra en el log. Si falla después de reponer (cancelación) solo se registra (requiere corrección manual). TODO: **idempotencia** del descuento (clave por pedido/operación en catalog) para que un reintento no descuente dos veces.
-- **Publicación después del commit**: el servicio emite `PedidoEstadoCambiadoEvent` (evento de aplicación de Spring, una foto inmutable del pedido) y `PedidoCommandListener` (`@TransactionalEventListener(AFTER_COMMIT)`) publica en Rabbit. Si Rabbit falla, el pedido queda guardado y el error va al log. TODO: patrón **outbox** para entrega al-menos-una-vez.
+- **Orden en `cambiarEstado`**: 1) validar con la máquina de estados, 2) llamar a catalog, 3) `saveAndFlush` (para que un conflicto de `@Version` aparezca antes del commit), 4) publicar en Rabbit, 5) si el guardado o la publicación fallan, **compensa** en catalog: repone lo descontado (aceptar) o vuelve a descontar lo repuesto (cancelar), y lo registra en el log. Si la compensación también falla queda en el log como `COMPENSACIÓN FALLIDA` (corrección manual). TODO: **idempotencia** del descuento (clave por pedido/operación en catalog) para que un reintento no descuente dos veces.
+- **Publicación dentro de la transacción, con confirm**: el servicio emite `PedidoEstadoCambiadoEvent` (evento de aplicación de Spring, una foto inmutable del pedido) y `PedidoCommandListener` (`@EventListener`, síncrono) publica en Rabbit y espera el publisher confirm de cada mensaje (`ConfirmacionBroker`). Rabbit caído, nack, mensaje no enrutable (`mandatory`) o sin confirm en `RABBIT_CONFIRM_TIMEOUT` → `ServicioNoDisponibleException` → rollback y **503**. Caso borde que queda: Rabbit confirma y luego falla el commit (el `saveAndFlush` previo lo deja casi imposible); el patrón **outbox** lo cerraría del todo.
 - **Kafka**: fuera de alcance. Las dependencias de Initializr quedan en el pom sin configuración ni código (sin beans de Kafka no hay conexión al broker). El mismo `PedidoEstadoCambiadoEvent` se usará para `orders.events` / `audit.timeline` (TODO en el listener).
 - **Clientes y dueño**: el `clienteId` es el claim `oid` (o `sub`). Un usuario que no es Admin ni Operador solo ve y modifica sus pedidos; uno ajeno responde **404** (no 403) para no revelar que existe. Si un usuario tiene varios roles, manda el de más privilegios.
 - **Solo Cliente crea pedidos**: el enunciado también lo permite a Operador, pero se restringió a Cliente porque un pedido necesita una cuenta de cliente (el request no tiene campo de cliente y el pedido queda a nombre de quien lo crea). Admin y Operador los gestionan desde el dashboard: cambian estado y editan ítems/dirección en CREADO.
@@ -208,7 +211,7 @@ curl -i -X DELETE "${H[@]}" $BASE/api/orders/2                                  
 - **Ítems repetidos**: el mismo `productoId` repetido en el request se agrupa en un solo ítem (suma de cantidades). Límites: 50 ítems y 1.000 unidades por ítem.
 - **Fechas del listado**: `desde`/`hasta` aceptan instante con zona (`2026-10-01T00:00:00Z`, `...-03:00`) o fecha sola (UTC; en `hasta` incluye el día completo). `size` se acota a 1..100 y `page` < 0 se trata como 0.
 - **Errores de catalog**: conexión rechazada, timeout o 5xx → 503 (sin filtrar el detalle) · 409 → 409 con el mismo `mensaje` y `detalles` · 404 de un producto → 400 con `detalles` · 401/403 → se propagan.
-- **Topología declarada en la primera conexión**: no al arrancar, para que la app no dependa de que Rabbit esté arriba. Las colas aparecen en la UI al publicar el primer mensaje.
+- **Topología declarada en la primera conexión**: no al arrancar, para que la app no dependa de que Rabbit esté arriba (aunque sin Rabbit no se pueden crear pedidos). Las colas aparecen en la UI al publicar el primer mensaje.
 - **`messageId` AMQP = `correlationId`**, como pide el enunciado. Para deduplicar, los consumidores deben usar `eventId` (del cuerpo), que es único por mensaje: una misma petición puede generar 2 mensajes (p. ej. `email.send` + `kitchen.ticket`) con el mismo `correlationId`.
 - **`traceId`**: sin una librería de tracing distribuido, es el mismo `X-Request-Id`.
 - **`ddl-auto: update`** como catalog (sin Flyway); `open-in-view: false`, por eso todo el mapeo a DTO ocurre dentro de las transacciones del servicio.

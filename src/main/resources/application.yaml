@@ -19,9 +19,13 @@ spring:
           issuer-uri: ${ENTRA_ISSUER_URI:https://login.microsoftonline.com/0bfad962-b91d-465a-b769-8e71565efe7d/v2.0}
           audiences: ${ENTRA_API_CLIENT_ID:d80d5009-1b8a-49b2-a3da-08a8bbd00936}
   # RabbitMQ vive en su propia EC2 (clúster de 2 nodos): RABBIT_ADDRESSES="ip1:5672,ip2:5672".
-  # La conexión es perezosa: la app arranca aunque Rabbit no esté disponible.
+  # Si un nodo no responde, la conexión se abre contra el siguiente de la lista.
+  # La conexión es perezosa: la app arranca aunque Rabbit no esté disponible, pero crear o cambiar
+  # el estado de un pedido sin Rabbit responde 503 (el pedido no se guarda).
   rabbitmq:
     addresses: ${RABBIT_ADDRESSES:localhost:5672}
+    # Por defecto el cliente espera 60 s por nodo: con un nodo apagado el failover tardaría eso.
+    connection-timeout: ${RABBIT_CONNECTION_TIMEOUT:3s}
     username: ${RABBIT_USERNAME:guest}
     password: ${RABBIT_PASSWORD:guest}
     publisher-confirm-type: correlated
@@ -51,6 +55,8 @@ pedidos360:
   # con los MISMOS argumentos (ver README) o RabbitMQ rechaza la declaración (PRECONDITION_FAILED).
   rabbit:
     declare-topology: ${RABBIT_DECLARE_TOPOLOGY:true}
+    # Espera máxima del publisher confirm de cada mensaje; sin confirm el pedido hace rollback (503).
+    confirm-timeout: ${RABBIT_CONFIRM_TIMEOUT:5s}
     exchanges:
       direct: cmd.direct
       topic: cmd.topic

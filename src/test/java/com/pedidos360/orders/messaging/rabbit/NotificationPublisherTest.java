@@ -9,6 +9,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.AmqpConnectException;
@@ -21,6 +22,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import com.pedidos360.orders.dto.NotificationMessage;
 import com.pedidos360.orders.exception.ServicioNoDisponibleException;
+import com.pedidos360.orders.support.RabbitMock;
 
 /** Exchange, routing key y propiedades AMQP de la notificación de prueba. RabbitTemplate mockeado. */
 class NotificationPublisherTest {
@@ -30,6 +32,11 @@ class NotificationPublisherTest {
 
     private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
     private final NotificationPublisher publisher = new NotificationPublisher(rabbitTemplate, PedidoCommandPublisherTest.PROPS);
+
+    @BeforeEach
+    void brokerConfirma() {
+        RabbitMock.confirmaTodo(rabbitTemplate);
+    }
 
     @Test
     void publicaElMensajeTalCualEnCmdDirectEmailSend() {

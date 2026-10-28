@@ -36,6 +36,7 @@ import com.pedidos360.orders.dto.PedidoResponse;
 import com.pedidos360.orders.exception.ConflictoException;
 import com.pedidos360.orders.exception.PedidoNotFoundException;
 import com.pedidos360.orders.exception.ProductoNoEncontradoEnCatalogoException;
+import com.pedidos360.orders.exception.ServicioNoDisponibleException;
 import com.pedidos360.orders.exception.SolicitudInvalidaException;
 import com.pedidos360.orders.exception.TransicionInvalidaException;
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
@@ -89,7 +90,7 @@ class PedidoServiceTest {
     void crearTomaNombreYPrecioDeCatalogYNoDelCliente() {
         when(catalogClient.buscarProducto(1L)).thenReturn(new ProductoCatalogo(1L, "Pan Amasado", new BigDecimal("600"), 80));
         when(catalogClient.buscarProducto(4L)).thenReturn(new ProductoCatalogo(4L, "Café Americano", new BigDecimal("1500"), 60));
-        when(pedidoRepository.save(any(Pedido.class))).thenAnswer(inv -> inv.getArgument(0));
+        guardarDevuelveElMismo();
 
         // el producto 1 viene dos veces: se agrupa en un solo ítem de 3 unidades
         PedidoResponse r = service.crear(new CrearPedidoRequest(" Av. Siempre Viva 742 ", List.of(
@@ -124,7 +125,7 @@ class PedidoServiceTest {
                 .isInstanceOf(SolicitudInvalidaException.class)
                 .satisfies(e -> assertThat(((SolicitudInvalidaException) e).getDetalles())
                         .containsKey("items[1].productoId"));
-        verify(pedidoRepository, never()).save(any());
+        verify(pedidoRepository, never()).saveAndFlush(any());
         verifyNoInteractions(eventPublisher);
     }
 
@@ -223,6 +224,38 @@ class PedidoServiceTest {
         verify(catalogClient).descontarStock(items);
         verify(catalogClient).reponerStock(items);
         verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void siRabbitFallaAlAceptarSeReponeElStockYSePropaga503() {
+        existente(EstadoPedido.CREADO);
+        guardarDevuelveElMismo();
+        doThrow(new ServicioNoDisponibleException("mensajería", new RuntimeException("Connection refused")))
+                .when(eventPublisher).publishEvent(any(Object.class));
+
+        assertThatThrownBy(() -> service.cambiarEstado(10L,
+                new CambiarEstadoRequest(EstadoPedido.ACEPTADO, null), TestData.operador()))
+                .isInstanceOf(ServicioNoDisponibleException.class);
+
+        List<StockItem> items = List.of(new StockItem(1L, 2), new StockItem(4L, 1));
+        verify(catalogClient).descontarStock(items);
+        verify(catalogClient).reponerStock(items);
+    }
+
+    @Test
+    void siRabbitFallaAlCancelarSeVuelveADescontarElStock() {
+        existente(EstadoPedido.ACEPTADO);
+        guardarDevuelveElMismo();
+        doThrow(new ServicioNoDisponibleException("mensajería", new RuntimeException("Connection refused")))
+                .when(eventPublisher).publishEvent(any(Object.class));
+
+        assertThatThrownBy(() -> service.cambiarEstado(10L,
+                new CambiarEstadoRequest(EstadoPedido.CANCELADO, null), TestData.operador()))
+                .isInstanceOf(ServicioNoDisponibleException.class);
+
+        List<StockItem> items = List.of(new StockItem(1L, 2), new StockItem(4L, 1));
+        verify(catalogClient).reponerStock(items);
+        verify(catalogClient).descontarStock(items);
     }
 
     // ---------- dueño / cliente ----------

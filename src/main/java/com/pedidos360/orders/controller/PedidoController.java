@@ -76,14 +76,14 @@ public class PedidoController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('Admin', 'Operador', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Obtener pedido (un Cliente solo ve los suyos)")
     public PedidoResponse obtener(@PathVariable Long id) {
         return pedidoService.obtener(id, usuarioActual.obtener());
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('Admin', 'Operador', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Listar pedidos paginados, más recientes primero (un Cliente solo recibe los suyos)")
     public PaginaResponse<PedidoResponse> listar(
             @Parameter(description = "Filtra por estado", example = "CREADO")
@@ -100,23 +100,23 @@ public class PedidoController {
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasAnyRole('Admin', 'Operador', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Editar ítems y/o dirección (solo en CREADO; recalcula precios desde catalog)")
     public PedidoResponse actualizar(@PathVariable Long id, @Valid @RequestBody ActualizarPedidoRequest request) {
         return pedidoService.actualizar(id, request, usuarioActual.obtener());
     }
 
     @PutMapping("/{id}/status")
-    @PreAuthorize("hasAnyRole('Operador', 'Admin', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Cambiar estado",
-            description = "Operador/Admin: cualquier transición válida. Cliente: solo CANCELADO de su pedido en CREADO. "
+            description = "Operador: cualquier transición válida. Cliente: solo CANCELADO de su pedido en CREADO. "
                     + "ACEPTADO descuenta stock en catalog; CANCELADO desde ACEPTADO/EN_PREPARACION lo repone.")
     public PedidoResponse cambiarEstado(@PathVariable Long id, @Valid @RequestBody CambiarEstadoRequest request) {
         return pedidoService.cambiarEstado(id, request, usuarioActual.obtener());
     }
 
     @GetMapping("/{id}/history")
-    @PreAuthorize("hasAnyRole('Admin', 'Operador', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Historial de estados (más antiguo primero)")
     public List<HistorialEstadoResponse> historial(@PathVariable Long id) {
         return pedidoService.historial(id, usuarioActual.obtener());
@@ -124,7 +124,7 @@ public class PedidoController {
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("hasRole('Admin')")
+    @PreAuthorize("hasRole('Operador')")
     @Operation(summary = "Borrado lógico (solo CREADO o CANCELADO)")
     @ApiResponse(responseCode = "204", description = "Eliminado")
     public void eliminar(@PathVariable Long id) {

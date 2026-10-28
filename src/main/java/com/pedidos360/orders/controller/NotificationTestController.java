@@ -29,7 +29,7 @@ public class NotificationTestController {
     private final NotificationPublisher publisher;
 
     @PostMapping("/test-notification")
-    @PreAuthorize("hasAnyRole('Admin', 'Operador', 'Cliente')")
+    @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
     @Operation(summary = "Publicar una notificación de prueba en cmd.direct / email.send")
     @ApiResponse(responseCode = "202", description = "Publicación solicitada (no significa que el correo se procesó)")
     public ResponseEntity<String> enviarNotificacion(@Valid @RequestBody NotificationMessage mensaje) {

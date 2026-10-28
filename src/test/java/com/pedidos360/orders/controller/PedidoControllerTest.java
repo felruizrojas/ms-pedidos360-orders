@@ -96,9 +96,19 @@ class PedidoControllerTest {
 
     @Test
     void sinScopeDevuelve403AunqueTengaRol() throws Exception {
-        mvc.perform(get(URL + "/1").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Admin"))))
+        mvc.perform(get(URL + "/1").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Operador"))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.status").value(403));
+    }
+
+    @Test
+    void adminNoEsActorDePedidos() throws Exception {
+        mvc.perform(get(URL + "/1").with(como("Admin"))).andExpect(status().isForbidden());
+        mvc.perform(get(URL).with(como("Admin"))).andExpect(status().isForbidden());
+        mvc.perform(put(URL + "/1/status").with(como("Admin")).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACEPTADO\"}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(pedidoService);
     }
 
     @Test
@@ -121,21 +131,21 @@ class PedidoControllerTest {
     @Test
     void clienteNoPuedeEliminar() throws Exception {
         mvc.perform(delete(URL + "/15").with(como("Cliente"))).andExpect(status().isForbidden());
-        mvc.perform(delete(URL + "/15").with(como("Operador"))).andExpect(status().isForbidden());
+        mvc.perform(delete(URL + "/15").with(como("Admin"))).andExpect(status().isForbidden());
         verifyNoInteractions(pedidoService);
     }
 
     @Test
-    void adminEliminaCon204() throws Exception {
-        mvc.perform(delete(URL + "/15").with(como("Admin"))).andExpect(status().isNoContent());
+    void operadorEliminaCon204() throws Exception {
+        mvc.perform(delete(URL + "/15").with(como("Operador"))).andExpect(status().isNoContent());
         verify(pedidoService).eliminar(15L);
     }
 
     @Test
-    void adminEditaPedido() throws Exception {
+    void operadorEditaPedido() throws Exception {
         when(pedidoService.actualizar(eq(15L), any(), any())).thenReturn(respuesta(EstadoPedido.CREADO));
 
-        mvc.perform(put(URL + "/15").with(como("Admin")).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(put(URL + "/15").with(como("Operador")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"direccionEntrega\":\"Otra\"}"))
                 .andExpect(status().isOk());
         verify(pedidoService).actualizar(eq(15L), any(), any());
@@ -228,7 +238,7 @@ class PedidoControllerTest {
 
     @Test
     void idNoNumericoDevuelve400() throws Exception {
-        mvc.perform(get(URL + "/abc").with(como("Admin"))).andExpect(status().isBadRequest());
+        mvc.perform(get(URL + "/abc").with(como("Operador"))).andExpect(status().isBadRequest());
     }
 
     @Test
@@ -250,7 +260,7 @@ class PedidoControllerTest {
         when(pedidoService.listar(any(), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(new PaginaResponse<>(List.of(), 1, 5, 0, 0));
 
-        mvc.perform(get(URL).with(como("Admin"))
+        mvc.perform(get(URL).with(como("Operador"))
                         .param("estado", "EN_PREPARACIÓN")
                         .param("desde", "2026-10-01T00:00:00-03:00")
                         .param("hasta", "2026-10-31")
@@ -263,14 +273,14 @@ class PedidoControllerTest {
 
     @Test
     void listarConFechaInvalidaDevuelve400() throws Exception {
-        mvc.perform(get(URL).with(como("Admin")).param("desde", "ayer"))
+        mvc.perform(get(URL).with(como("Operador")).param("desde", "ayer"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detalles.desde").exists());
     }
 
     @Test
     void listarConEstadoDesconocidoDevuelve400() throws Exception {
-        mvc.perform(get(URL).with(como("Admin")).param("estado", "VOLANDO"))
+        mvc.perform(get(URL).with(como("Operador")).param("estado", "VOLANDO"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.mensaje").value(org.hamcrest.Matchers.containsString("VOLANDO")));
     }
@@ -298,7 +308,7 @@ class PedidoControllerTest {
                 "Stock insuficiente para \"Pan Amasado\" (id 1): solicitado 5, disponible 2",
                 java.util.Map.of("productoId", 1, "solicitado", 5, "disponible", 2)));
 
-        mvc.perform(put(URL + "/15/status").with(como("Admin")).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(put(URL + "/15/status").with(como("Operador")).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"ACEPTADO\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.detalles.disponible").value(2));
@@ -364,7 +374,7 @@ class PedidoControllerTest {
     @Test
     void requestIdSeDevuelveEnLaRespuesta() throws Exception {
         when(pedidoService.historial(eq(15L), any())).thenReturn(List.of());
-        mvc.perform(get(URL + "/15/history").with(como("Admin")).header("X-Request-Id", "req-abc"))
+        mvc.perform(get(URL + "/15/history").with(como("Operador")).header("X-Request-Id", "req-abc"))
                 .andExpect(header().string("X-Request-Id", "req-abc"));
     }
 

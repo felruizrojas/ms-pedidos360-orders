@@ -1,37 +1,30 @@
 package com.pedidos360.orders.messaging.rabbit;
 
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 
 import com.pedidos360.orders.messaging.PedidoEstadoCambiadoEvent;
 
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 /**
- * Publica en RabbitMQ solo DESPUÉS del commit: un pedido que no se guardó (409, error de BD) nunca
- * genera comandos. Si Rabbit falla, el pedido igual queda guardado y el error queda en el log.
+ * Publica en RabbitMQ DENTRO de la transacción del pedido (listener síncrono, antes del commit): si Rabbit
+ * está caído o no confirma, la excepción llega al servicio, el pedido hace rollback y la API responde 503.
+ * Un pedido nunca queda guardado sin su comando en la cola. Si se cae un nodo del clúster, la conexión se
+ * abre contra el otro de RABBIT_ADDRESSES.
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class PedidoCommandListener {
 
     private final PedidoCommandPublisher publisher;
 
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @EventListener
     public void onPedidoEstadoCambiado(PedidoEstadoCambiadoEvent evento) {
-        // TODO patrón outbox: hoy, si Rabbit no está disponible justo después del commit, el comando se
-        // pierde (solo queda en el log). Con una tabla outbox escrita en la misma transacción y un
-        // relay que reintente, la entrega sería al-menos-una-vez.
+        // Caso borde: Rabbit confirma y luego el commit falla -> comando sin pedido. saveAndFlush antes de
+        // publicar deja como única falla posible la del commit mismo; el patrón outbox lo cerraría del todo.
         // TODO Kafka: este mismo evento se publicará también en orders.events / audit.timeline
         // (report y audit) cuando se implemente esa parte.
-        try {
-            publisher.publicar(evento);
-        } catch (RuntimeException ex) {
-            log.error("No se pudo publicar en RabbitMQ el cambio del pedido {} ({} -> {}); el pedido quedó guardado",
-                    evento.pedidoId(), evento.estadoAnterior(), evento.estadoNuevo(), ex);
-        }
+        publisher.publicar(evento);
     }
 }

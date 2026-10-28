@@ -19,7 +19,7 @@ public class OpenApiConfig {
         return new OpenAPI()
                 .info(new Info().title("Pedidos360 Orders").version("v1")
                         .description("Pedidos, máquina de estados y comandos RabbitMQ. "
-                                + "Token de Entra ID con scope access_as_user y rol Admin/Operador/Cliente."))
+                                + "Token de Entra ID con scope access_as_user y rol Operador/Cliente."))
                 .components(new Components().addSecuritySchemes(BEARER_AUTH,
                         new SecurityScheme().type(SecurityScheme.Type.HTTP).scheme("bearer").bearerFormat("JWT")))
                 .addSecurityItem(new SecurityRequirement().addList(BEARER_AUTH));

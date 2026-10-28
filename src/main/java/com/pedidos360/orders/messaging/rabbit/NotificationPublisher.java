@@ -32,6 +32,7 @@ public class NotificationPublisher {
 
     public void enviarNotificacion(NotificationMessage mensaje) {
         String messageId = UUID.randomUUID().toString();
+        CorrelationData confirmacion = new CorrelationData(messageId);
         try {
             rabbitTemplate.convertAndSend(properties.exchanges().direct(), properties.routingKeys().email(), mensaje,
                     message -> {
@@ -41,10 +42,11 @@ public class NotificationPublisher {
                         props.setType(TYPE_TEST_NOTIFICATION);
                         props.setMessageId(messageId);
                         return message;
-                    }, new CorrelationData(messageId));
+                    }, confirmacion);
         } catch (AmqpException ex) {
             throw new ServicioNoDisponibleException("mensajería", ex);
         }
-        log.info("Publicación solicitada para el pedido {} (messageId={})", mensaje.pedidoId(), messageId);
+        ConfirmacionBroker.esperar(confirmacion, properties.confirmTimeout());
+        log.info("Publicación confirmada por RabbitMQ para el pedido {} (messageId={})", mensaje.pedidoId(), messageId);
     }
 }

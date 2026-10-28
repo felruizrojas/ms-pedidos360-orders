@@ -1,5 +1,7 @@
 package com.pedidos360.orders.messaging.rabbit;
 
+import java.time.Duration;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -12,7 +14,8 @@ public record RabbitProperties(
         Exchanges exchanges,
         Destinos queues,
         Destinos routingKeys,
-        Destinos topicPatterns) {
+        Destinos topicPatterns,
+        Duration confirmTimeout) {
 
     public record Exchanges(String direct, String topic, String dlx) {
     }

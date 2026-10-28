@@ -10,7 +10,7 @@ import com.pedidos360.orders.model.Pedido;
 /**
  * Evento de dominio (ApplicationEvent de Spring vía publishEvent) emitido al crear un pedido
  * (estadoAnterior = null) y en cada cambio de estado. Es una foto inmutable tomada dentro de la
- * transacción: los listeners AFTER_COMMIT no tocan entidades JPA. Lo consume la mensajería
+ * transacción: los listeners no tocan entidades JPA. Lo consume la mensajería
  * (hoy RabbitMQ; más adelante también Kafka).
  */
 public record PedidoEstadoCambiadoEvent(

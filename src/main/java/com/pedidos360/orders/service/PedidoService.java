@@ -83,7 +83,8 @@ public class PedidoService {
         pedido.reemplazarItems(items);
         pedido.agregarHistorial(historial(null, EstadoPedido.CREADO, usuario, ahora, null));
 
-        Pedido guardado = pedidoRepository.save(pedido);
+        // saveAndFlush: un error de BD aparece antes de publicar. Si Rabbit falla, rollback y 503.
+        Pedido guardado = pedidoRepository.saveAndFlush(pedido);
         publicar(guardado, null, ahora);
         return PedidoMapper.toResponse(guardado);
     }
@@ -128,8 +129,8 @@ public class PedidoService {
 
     /**
      * Orden: 1) validar la transición, 2) llamar a catalog (descontar/reponer), 3) guardar,
-     * 4) si el guardado falla después de descontar, compensar reponiendo. El mensaje a Rabbit sale
-     * recién después del commit (PedidoCommandListener), así un 409 nunca publica nada.
+     * 4) publicar en Rabbit (PedidoCommandListener, dentro de la transacción), 5) si el guardado o la
+     * publicación fallan después de descontar/reponer, compensar en catalog. Un 409 nunca publica nada.
      */
     @Transactional
     public PedidoResponse cambiarEstado(Long id, CambiarEstadoRequest request, Usuario usuario) {
@@ -168,13 +169,13 @@ public class PedidoService {
         Pedido guardado;
         try {
             // saveAndFlush: un conflicto de @Version (u otro error de BD) aparece aquí y no en el commit,
-            // a tiempo para compensar el stock.
+            // a tiempo para compensar el stock. Rabbit caído (503) también hace rollback y compensa.
             guardado = pedidoRepository.saveAndFlush(pedido);
+            publicar(guardado, anterior, ahora);
         } catch (RuntimeException ex) {
             compensar(pedido.getId(), stock, descontado, repuesto, ex);
             throw ex;
         }
-        publicar(guardado, anterior, ahora);
         return PedidoMapper.toResponse(guardado);
     }
 
@@ -265,7 +266,8 @@ public class PedidoService {
     private void compensar(Long pedidoId, List<StockItem> stock, boolean descontado, boolean repuesto,
             RuntimeException causa) {
         if (descontado) {
-            log.error("No se pudo guardar el pedido {} después de descontar stock; se intenta reponer", pedidoId, causa);
+            log.error("No se pudo guardar o publicar el pedido {} después de descontar stock; se intenta reponer",
+                    pedidoId, causa);
             try {
                 catalogClient.reponerStock(stock);
                 log.warn("Compensación OK: stock del pedido {} repuesto en catalog", pedidoId);
@@ -274,8 +276,15 @@ public class PedidoService {
                         + "pedido quedara ACEPTADO; requiere corrección manual. Ítems: {}", pedidoId, stock, e);
             }
         } else if (repuesto) {
-            log.error("No se pudo guardar la cancelación del pedido {} pero su stock ya fue repuesto en catalog; "
-                    + "requiere corrección manual. Ítems: {}", pedidoId, stock, causa);
+            log.error("No se pudo guardar o publicar la cancelación del pedido {} después de reponer stock; "
+                    + "se intenta volver a descontar", pedidoId, causa);
+            try {
+                catalogClient.descontarStock(stock);
+                log.warn("Compensación OK: stock del pedido {} descontado nuevamente en catalog", pedidoId);
+            } catch (RuntimeException e) {
+                log.error("COMPENSACIÓN FALLIDA: el stock del pedido {} quedó repuesto en catalog sin que el pedido "
+                        + "quedara CANCELADO; requiere corrección manual. Ítems: {}", pedidoId, stock, e);
+            }
         }
     }
 

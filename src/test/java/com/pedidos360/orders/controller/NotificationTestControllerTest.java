@@ -74,7 +74,7 @@ class NotificationTestControllerTest {
     void rabbitCaidoResponde503() throws Exception {
         doThrow(new ServicioNoDisponibleException("mensajería", null)).when(publisher).enviarNotificacion(any());
 
-        mvc.perform(post(URL).with(PedidoControllerTest.como("Admin")).contentType(MediaType.APPLICATION_JSON).content(BODY))
+        mvc.perform(post(URL).with(PedidoControllerTest.como("Cliente")).contentType(MediaType.APPLICATION_JSON).content(BODY))
                 .andExpect(status().isServiceUnavailable());
     }
 
