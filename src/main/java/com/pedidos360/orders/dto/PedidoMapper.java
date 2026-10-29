@@ -10,16 +10,12 @@ public final class PedidoMapper {
     }
 
     public static PedidoResponse toResponse(Pedido p) {
-        return toResponse(p, false);
-    }
-
-    public static PedidoResponse toResponse(Pedido p, boolean alertaMensajeria) {
         return new PedidoResponse(p.getId(), p.getClienteId(), p.getClienteNombre(), p.getClienteEmail(),
                 p.getDireccionEntrega(), p.getEstado(), p.getTotal(), p.isStockDescontado(),
                 p.getItems().stream().map(PedidoMapper::toResponse).toList(),
                 p.getCreadoEn(), p.getAceptadoEn(), p.getEnPreparacionEn(), p.getDespachadoEn(),
                 p.getEntregadoEn(), p.getCanceladoEn(), p.getMotivoCancelacion(), p.getVersion(),
-                alertaMensajeria);
+                p.isEliminado(), p.getEliminadoEn(), p.getEliminadoPor());
     }
 
     public static ItemPedidoResponse toResponse(ItemPedido i) {

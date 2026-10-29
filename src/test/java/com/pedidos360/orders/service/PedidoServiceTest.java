@@ -62,14 +62,11 @@ class PedidoServiceTest {
     @Mock
     ApplicationEventPublisher eventPublisher;
 
-    @Mock
-    SeguimientoMensajes seguimiento;
-
     PedidoService service;
 
     @BeforeEach
     void setUp() {
-        service = new PedidoService(pedidoRepository, historialRepository, catalogClient, eventPublisher, seguimiento);
+        service = new PedidoService(pedidoRepository, historialRepository, catalogClient, eventPublisher);
     }
 
     private void guardarDevuelveElMismo() {
@@ -78,7 +75,7 @@ class PedidoServiceTest {
 
     private Pedido existente(EstadoPedido estado) {
         Pedido pedido = TestData.pedido(10L, estado);
-        when(pedidoRepository.findByIdAndEliminadoFalse(10L)).thenReturn(Optional.of(pedido));
+        when(pedidoRepository.findById(10L)).thenReturn(Optional.of(pedido));
         return pedido;
     }
 

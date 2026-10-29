@@ -27,6 +27,8 @@ public record PedidoResponse(
         Instant canceladoEn,
         String motivoCancelacion,
         Long version,
-        @Schema(description = "true si algún mensaje del pedido falló o quedó en la DLQ (ver /{id}/messages)")
-        boolean alertaMensajeria) {
+        @Schema(description = "Borrado lógico: el pedido se muestra con estado Eliminado y no se puede modificar")
+        boolean eliminado,
+        Instant eliminadoEn,
+        @Schema(example = "Olga Operadora (Operador)") String eliminadoPor) {
 }

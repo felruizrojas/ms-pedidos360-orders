@@ -69,8 +69,6 @@ class PedidoFlujoIntegrationTest {
     @MockitoBean
     RabbitTemplate rabbitTemplate;
 
-    @Autowired
-    com.pedidos360.orders.messaging.rabbit.ResultadoComandoListener resultadoListener;
 
     @BeforeEach
     void catalogConProductos() {
@@ -295,98 +293,71 @@ class PedidoFlujoIntegrationTest {
     }
 
     @Test
-    void operadorEliminaLogicamenteYLuegoEs404() throws Exception {
+    void operadorEliminaLogicamenteYQuedaVisibleComoEliminado() throws Exception {
         long id = crearComo("cliente-borra");
         mvc.perform(delete(URL + "/" + id).with(operador())).andExpect(status().isNoContent());
-        mvc.perform(get(URL + "/" + id).with(operador())).andExpect(status().isNotFound());
+        mvc.perform(get(URL + "/" + id).with(operador()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.eliminado").value(true))
+                .andExpect(jsonPath("$.eliminadoPor").value("Usuario operador-1 (Operador)"))
+                .andExpect(jsonPath("$.eliminadoEn").exists());
+        mvc.perform(delete(URL + "/" + id).with(operador())).andExpect(status().isConflict());
+        verificarPublicados("email.send", 2); // creado + eliminado (OrderDeleted)
     }
 
     @Test
-    void canceladoDesapareceDelListadoYAvisaAlCliente() throws Exception {
-        long id = crearComo("cliente-cancela");
-        mvc.perform(put(URL + "/" + id + "/status").with(usuario("cliente-cancela", "Cliente"))
+    void canceladosYEliminadosAparecenEnLasListasDeClienteYOperador() throws Exception {
+        long cancelado = crearComo("cliente-listas");
+        long eliminado = crearComo("cliente-listas");
+        mvc.perform(put(URL + "/" + cancelado + "/status").with(usuario("cliente-listas", "Cliente"))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELADO\",\"comentario\":\"Ya no\"}"))
                 .andExpect(status().isOk());
+        mvc.perform(delete(URL + "/" + eliminado).with(operador())).andExpect(status().isNoContent());
 
-        mvc.perform(get(URL).with(usuario("cliente-cancela", "Cliente")))
-                .andExpect(jsonPath("$.contenido.length()").value(0));
+        String mios = mvc.perform(get(URL).with(usuario("cliente-listas", "Cliente")))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(JsonPath.<List<Integer>>read(mios, "$.contenido[*].id")).contains((int) cancelado, (int) eliminado);
+        assertThat(JsonPath.<List<Boolean>>read(mios, "$.contenido[?(@.id == " + eliminado + ")].eliminado"))
+                .containsExactly(true);
         String todos = mvc.perform(get(URL).with(operador()).param("size", "100"))
                 .andReturn().getResponse().getContentAsString();
-        assertThat(JsonPath.<List<Integer>>read(todos, "$.contenido[*].id")).doesNotContain((int) id);
-        mvc.perform(get(URL + "/notifications").with(usuario("cliente-cancela", "Cliente")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].pedidoId").value(id))
-                .andExpect(jsonPath("$[0].titulo").value("Pedido cancelado"))
-                .andExpect(jsonPath("$[0].leida").value(false));
+        assertThat(JsonPath.<List<Integer>>read(todos, "$.contenido[*].id")).contains((int) cancelado, (int) eliminado);
     }
 
     @Test
-    void eliminarYEditarPublicanEnRabbitYAvisanEnLaApp() throws Exception {
-        long id = crearComo("cliente-avisos");
-        mvc.perform(put(URL + "/" + id).with(operador()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"direccionEntrega\":\"Otra 123\"}"))
+    void canceladoPorElOperadorElClienteYaNoPuedeEditarNiCancelar() throws Exception {
+        long id = crearComo("cliente-tarde");
+        mvc.perform(put(URL + "/" + id + "/status").with(operador()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CANCELADO\",\"comentario\":\"Sin stock\"}"))
                 .andExpect(status().isOk());
+
+        mvc.perform(put(URL + "/" + id).with(usuario("cliente-tarde", "Cliente")).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"direccionEntrega\":\"Otra 123\"}"))
+                .andExpect(status().isConflict());
+        mvc.perform(put(URL + "/" + id + "/status").with(usuario("cliente-tarde", "Cliente"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELADO\",\"comentario\":\"x\"}"))
+                .andExpect(status().isConflict());
+        // Puede seguir viéndolo por id (motivo y quién lo canceló), pero no modificarlo.
+        mvc.perform(get(URL + "/" + id).with(usuario("cliente-tarde", "Cliente")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado").value("CANCELADO"));
+    }
+
+    @Test
+    void eliminadoPorElOperadorElClienteLoVePeroNoLoModifica() throws Exception {
+        long id = crearComo("cliente-borrado");
         mvc.perform(delete(URL + "/" + id).with(operador())).andExpect(status().isNoContent());
 
-        verificarPublicados("email.send", 3); // creado + modificado + eliminado
-        mvc.perform(get(URL + "/notifications").with(usuario("cliente-avisos", "Cliente")))
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].titulo").value("Pedido eliminado"))
-                .andExpect(jsonPath("$[1].titulo").value("Pedido modificado"));
-
-        mvc.perform(put(URL + "/notifications/read").with(usuario("cliente-avisos", "Cliente")))
-                .andExpect(status().isNoContent());
-        mvc.perform(get(URL + "/notifications").with(usuario("cliente-avisos", "Cliente")))
-                .andExpect(jsonPath("$[0].leida").value(true))
-                .andExpect(jsonPath("$[1].leida").value(true));
-        // Cada usuario ve solo sus avisos.
-        mvc.perform(get(URL + "/notifications").with(usuario("otro-cliente", "Cliente")))
-                .andExpect(jsonPath("$.length()").value(0));
-    }
-
-    @Test
-    void laVueltaDeNotifyQuedaEnLaMensajeriaDelPedidoConElActor() throws Exception {
-        long id = crearComo("cliente-msg");
-
-        String enviados = mvc.perform(get(URL + "/" + id + "/messages").with(operador()))
+        mvc.perform(get(URL + "/" + id).with(usuario("cliente-borrado", "Cliente")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].comando").value("email"))
-                .andExpect(jsonPath("$[0].type").value("OrderCreated"))
-                .andExpect(jsonPath("$[0].estado").value("ENVIADO"))
-                .andExpect(jsonPath("$[0].usuarioRol").value("Cliente"))
-                .andExpect(jsonPath("$[0].usuarioNombre").value("Usuario cliente-msg"))
-                .andReturn().getResponse().getContentAsString();
-        String eventId = JsonPath.read(enviados, "$[0].comandoEventId");
-
-        // notify rechazó el comando y llegó a la DLQ: su resultado vuelve por Rabbit a q.orders.resultados.
-        String resultado = "{\"eventId\":\"r-1\",\"comandoEventId\":\"" + eventId + "\",\"pedidoId\":" + id
-                + ",\"comando\":\"email\",\"type\":\"OrderCreated\",\"resultado\":\"EN_DLQ\","
-                + "\"motivo\":\"El pedido no trae clienteEmail\",\"cola\":\"q.cmd.email\",\"fecha\":\"2030-01-01T00:00:00Z\"}";
-        resultadoListener.onResultado(new org.springframework.amqp.core.Message(
-                resultado.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                new org.springframework.amqp.core.MessageProperties()));
-
-        mvc.perform(get(URL + "/" + id + "/messages").with(operador()))
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[1].estado").value("EN_DLQ"))
-                .andExpect(jsonPath("$[1].motivo").value("El pedido no trae clienteEmail"))
-                .andExpect(jsonPath("$[1].comandoEventId").value(eventId));
-        mvc.perform(get(URL + "/" + id).with(operador())).andExpect(jsonPath("$.alertaMensajeria").value(true));
-        String lista = mvc.perform(get(URL).with(operador()).param("size", "100"))
-                .andReturn().getResponse().getContentAsString();
-        assertThat(JsonPath.<List<Boolean>>read(lista, "$.contenido[?(@.id == " + id + ")].alertaMensajeria"))
-                .containsExactly(true);
-        // La mensajería es del dashboard del operador.
-        mvc.perform(get(URL + "/" + id + "/messages").with(usuario("cliente-msg", "Cliente")))
-                .andExpect(status().isForbidden());
-    }
-
-    @Test
-    void unResultadoIlegibleSeDescartaSinRomperNada() {
-        resultadoListener.onResultado(new org.springframework.amqp.core.Message(
-                "{esto no es json".getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                new org.springframework.amqp.core.MessageProperties()));
+                .andExpect(jsonPath("$.eliminado").value(true));
+        mvc.perform(put(URL + "/" + id).with(usuario("cliente-borrado", "Cliente")).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"direccionEntrega\":\"Otra 123\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.mensaje").value("El pedido " + id + " fue eliminado y ya no se puede modificar"));
+        mvc.perform(put(URL + "/" + id + "/status").with(usuario("cliente-borrado", "Cliente"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELADO\",\"comentario\":\"x\"}"))
+                .andExpect(status().isConflict());
     }
 
     @Test

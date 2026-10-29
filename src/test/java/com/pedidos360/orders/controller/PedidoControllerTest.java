@@ -77,7 +77,7 @@ class PedidoControllerTest {
     static PedidoResponse respuesta(EstadoPedido estado) {
         return new PedidoResponse(15L, "oid-Cliente", "Cliente Test", "cliente@pedidos360.cl", "Av. Siempre Viva 742",
                 estado, new BigDecimal("1200.00"), false, List.of(), Instant.parse("2026-10-20T15:00:00Z"),
-                null, null, null, null, null, null, 0L, false);
+                null, null, null, null, null, null, 0L, false, null, null);
     }
 
     // ---------- autenticación / autorización ----------

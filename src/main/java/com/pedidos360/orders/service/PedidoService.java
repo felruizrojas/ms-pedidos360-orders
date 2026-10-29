@@ -8,11 +8,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -28,7 +26,6 @@ import com.pedidos360.orders.dto.CambiarEstadoRequest;
 import com.pedidos360.orders.dto.CrearPedidoRequest;
 import com.pedidos360.orders.dto.HistorialEstadoResponse;
 import com.pedidos360.orders.dto.ItemPedidoRequest;
-import com.pedidos360.orders.dto.MensajeComandoResponse;
 import com.pedidos360.orders.dto.PaginaResponse;
 import com.pedidos360.orders.dto.PedidoMapper;
 import com.pedidos360.orders.dto.PedidoResponse;
@@ -68,7 +65,6 @@ public class PedidoService {
     private final HistorialEstadoRepository historialRepository;
     private final CatalogClient catalogClient;
     private final ApplicationEventPublisher eventPublisher;
-    private final SeguimientoMensajes seguimiento;
     private final MaquinaEstadosPedido maquina = new MaquinaEstadosPedido();
 
     @Transactional
@@ -96,14 +92,7 @@ public class PedidoService {
 
     @Transactional(readOnly = true)
     public PedidoResponse obtener(Long id, Usuario usuario) {
-        Pedido pedido = obtenerVisible(id, usuario);
-        return PedidoMapper.toResponse(pedido, !seguimiento.pedidosConFallas(List.of(pedido.getId())).isEmpty());
-    }
-
-    /** Ida y vuelta de los mensajes del pedido por RabbitMQ (solo Operador, ver controller). */
-    @Transactional(readOnly = true)
-    public List<MensajeComandoResponse> mensajes(Long id, Usuario usuario) {
-        return seguimiento.listar(obtenerVisible(id, usuario).getId());
+        return PedidoMapper.toResponse(obtenerVisible(id, usuario));
     }
 
     @Transactional(readOnly = true)
@@ -115,10 +104,9 @@ public class PedidoService {
         String clienteId = usuario.esSoloCliente() ? usuario.id() : null;
         Pageable pageable = PageRequest.of(Math.max(pagina, 0), Math.clamp(tamano, 1, TAMANO_MAXIMO),
                 Sort.by(Sort.Direction.DESC, "creadoEn").and(Sort.by(Sort.Direction.DESC, "id")));
-        Page<Pedido> page = pedidoRepository.findAll(PedidoSpecifications.filtrar(clienteId, estado, desde, hasta),
-                pageable);
-        Set<Long> conFallas = seguimiento.pedidosConFallas(page.map(Pedido::getId).getContent());
-        return PaginaResponse.de(page, p -> PedidoMapper.toResponse(p, conFallas.contains(p.getId())));
+        return PaginaResponse.de(
+                pedidoRepository.findAll(PedidoSpecifications.filtrar(clienteId, estado, desde, hasta), pageable),
+                PedidoMapper::toResponse);
     }
 
     @Transactional
@@ -126,7 +114,7 @@ public class PedidoService {
         if (request.direccionEntrega() == null && request.items() == null) {
             throw new SolicitudInvalidaException(Map.of("pedido", "Debe indicar direccionEntrega y/o items."));
         }
-        Pedido pedido = obtenerVisible(id, usuario);
+        Pedido pedido = obtenerModificable(id, usuario);
         if (pedido.getEstado() != EstadoPedido.CREADO) {
             throw new ConflictoException("Solo se puede editar un pedido en estado CREADO (estado actual: "
                     + pedido.getEstado() + ")");
@@ -150,7 +138,7 @@ public class PedidoService {
      */
     @Transactional
     public PedidoResponse cambiarEstado(Long id, CambiarEstadoRequest request, Usuario usuario) {
-        Pedido pedido = obtenerVisible(id, usuario);
+        Pedido pedido = obtenerModificable(id, usuario);
         EstadoPedido anterior = pedido.getEstado();
         EstadoPedido nuevo = request.status();
 
@@ -204,26 +192,38 @@ public class PedidoService {
     }
 
     /**
-     * Borrado lógico (la fila queda con eliminado = true); solo pedidos que no comprometen stock (CREADO o
-     * CANCELADO). Publica OrderDeleted: el cliente recibe el correo y el aviso en la app.
+     * Borrado lógico (la fila queda con eliminado = true, cuándo y quién): el pedido se sigue viendo como
+     * Eliminado, en solo lectura. Solo pedidos que no comprometen stock (CREADO o CANCELADO). Publica
+     * OrderDeleted: el cliente recibe el correo.
      */
     @Transactional
     public void eliminar(Long id, Usuario usuario) {
-        Pedido pedido = pedidoRepository.findByIdAndEliminadoFalse(id)
-                .orElseThrow(() -> new PedidoNotFoundException(id));
+        Pedido pedido = obtenerModificable(id, usuario);
         if (pedido.getEstado() != EstadoPedido.CREADO && pedido.getEstado() != EstadoPedido.CANCELADO) {
             throw new ConflictoException("Solo se pueden eliminar pedidos en estado CREADO o CANCELADO (estado actual: "
                     + pedido.getEstado() + ")");
         }
         pedido.setEliminado(true);
+        pedido.setEliminadoEn(Instant.now());
+        pedido.setEliminadoPor(usuario.nombre() + " (" + usuario.rolPrincipal() + ")");
         Pedido guardado = pedidoRepository.saveAndFlush(pedido);
         publicar(guardado, TipoEventoPedido.ELIMINADO, guardado.getEstado(), usuario, Instant.now());
     }
 
+    /** Incluye los eliminados (se ven en solo lectura). Un Cliente solo ve los suyos: los ajenos dan 404. */
     private Pedido obtenerVisible(Long id, Usuario usuario) {
-        return pedidoRepository.findByIdAndEliminadoFalse(id)
+        return pedidoRepository.findById(id)
                 .filter(p -> usuario.esPersonal() || p.getClienteId().equals(usuario.id()))
                 .orElseThrow(() -> new PedidoNotFoundException(id));
+    }
+
+    /** Un pedido eliminado ya no se edita, no cambia de estado ni se vuelve a eliminar (409). */
+    private Pedido obtenerModificable(Long id, Usuario usuario) {
+        Pedido pedido = obtenerVisible(id, usuario);
+        if (pedido.isEliminado()) {
+            throw new ConflictoException("El pedido " + id + " fue eliminado y ya no se puede modificar");
+        }
+        return pedido;
     }
 
     private static void validarCancelacionDeCliente(EstadoPedido actual, EstadoPedido nuevo) {

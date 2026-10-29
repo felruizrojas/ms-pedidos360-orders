@@ -1,8 +1,4 @@
 spring:
-  rabbitmq:
-    listener:
-      simple:
-        auto-startup: false
   datasource:
     url: jdbc:h2:mem:orders;DB_CLOSE_DELAY=-1
     username: sa

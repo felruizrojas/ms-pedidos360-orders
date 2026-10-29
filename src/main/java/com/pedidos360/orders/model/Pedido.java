@@ -83,9 +83,15 @@ public class Pedido {
     @Version
     private Long version;
 
-    /** Borrado lógico (DELETE solo lo marca). */
+    /** Borrado lógico (DELETE solo lo marca): el pedido se sigue viendo, en solo lectura. */
     @Column(nullable = false)
     private boolean eliminado;
+
+    private Instant eliminadoEn;
+
+    /** Nombre y rol de quien lo eliminó, p. ej. "Olga Operadora (Operador)". */
+    @Column(length = 200)
+    private String eliminadoPor;
 
     @OneToMany(mappedBy = "pedido", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("id ASC")

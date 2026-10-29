@@ -25,7 +25,6 @@ import com.pedidos360.orders.dto.ActualizarPedidoRequest;
 import com.pedidos360.orders.dto.CambiarEstadoRequest;
 import com.pedidos360.orders.dto.CrearPedidoRequest;
 import com.pedidos360.orders.dto.HistorialEstadoResponse;
-import com.pedidos360.orders.dto.MensajeComandoResponse;
 import com.pedidos360.orders.dto.PaginaResponse;
 import com.pedidos360.orders.dto.PedidoResponse;
 import com.pedidos360.orders.exception.ErrorBodySchema;
@@ -85,7 +84,7 @@ public class PedidoController {
 
     @GetMapping
     @PreAuthorize("hasAnyRole('Operador', 'Cliente')")
-    @Operation(summary = "Listar pedidos paginados, más recientes primero (un Cliente solo recibe los suyos; nunca cancelados ni eliminados)")
+    @Operation(summary = "Listar pedidos paginados, más recientes primero (un Cliente solo recibe los suyos; incluye cancelados y eliminados)")
     public PaginaResponse<PedidoResponse> listar(
             @Parameter(description = "Filtra por estado", example = "CREADO")
             @RequestParam(required = false) EstadoPedido estado,
@@ -123,17 +122,10 @@ public class PedidoController {
         return pedidoService.historial(id, usuarioActual.obtener());
     }
 
-    @GetMapping("/{id}/messages")
-    @PreAuthorize("hasRole('Operador')")
-    @Operation(summary = "Mensajería del pedido: cada comando enviado a RabbitMQ y su resultado (procesado, fallido o en la DLQ)")
-    public List<MensajeComandoResponse> mensajes(@PathVariable Long id) {
-        return pedidoService.mensajes(id, usuarioActual.obtener());
-    }
-
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PreAuthorize("hasRole('Operador')")
-    @Operation(summary = "Borrado lógico (solo CREADO o CANCELADO); avisa al cliente por correo y en la app")
+    @Operation(summary = "Borrado lógico (solo CREADO o CANCELADO): queda visible como Eliminado, en solo lectura; avisa al cliente por correo")
     @ApiResponse(responseCode = "204", description = "Eliminado")
     public void eliminar(@PathVariable Long id) {
         pedidoService.eliminar(id, usuarioActual.obtener());
